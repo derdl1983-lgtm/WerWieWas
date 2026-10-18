@@ -1,0 +1,61 @@
+name: Build Debug-APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: JDK 17 einrichten
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle 8.7 einrichten
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Debug-APK bauen
+        id: buildapk
+        continue-on-error: true
+        run: |
+          status=0
+          gradle :app:assembleDebug --stacktrace --no-daemon > build.log 2>&1 || status=1
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: APK als Release veröffentlichen
+        if: steps.buildapk.outputs.status == '0'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-latest
+          name: Automatischer APK-Build
+          body: |
+            Debug-APK aus dem aktuellen Stand von main.
+
+            Download: app-debug.apk – auf dem Handy öffnen und installieren
+            ("Installation aus unbekannten Quellen" für den Browser erlauben).
+          files: app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fehler-Log ins Repository committen
+        if: steps.buildapk.outputs.status != '0'
+        run: |
+          tail -n 400 build.log > last-build-error.log
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last-build-error.log
+          git commit -m "[skip ci] Build-Fehlerprotokoll aktualisieren"
+          git push

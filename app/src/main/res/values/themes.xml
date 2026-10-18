@@ -1,0 +1,6 @@
+<resources>
+    <!-- Compose-App: minimalistisches Basis-Theme ohne ActionBar -->
+    <style name="Theme.WerWieWas" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/app_background</item>
+    </style>
+</resources>
