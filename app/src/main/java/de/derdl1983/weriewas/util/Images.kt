@@ -41,12 +41,8 @@ object Images {
         lastError = null
 
         // Schritt 0: Daten einmalig lesen (robust gegen nur einmal öffnbare Streams).
-        val bytes: ByteArray = try {
+        val bytes: ByteArray? = try {
             context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: run {
-                    lastError = "Stream konnte nicht geöffnet werden ($uri)"
-                    null
-                }
         } catch (e: Exception) {
             lastError = "Lesen fehlgeschlagen: ${e.javaClass.simpleName}: ${e.message}"
             null
@@ -86,7 +82,7 @@ object Images {
         // Schritt 2: ImageDecoder (ab API 28) – versteht HEIC/HEIF, GIF, WebP inkl. EXIF-Rotation.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
-                val source = ImageDecoder.createSource(ByteArrayInputStream(bytes))
+                val source = ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes))
                 val decoded = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
                     decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                     val longest = maxOf(info.size.width, info.size.height)
