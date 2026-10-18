@@ -26,6 +26,9 @@ jobs:
         with:
           gradle-version: 8.7
 
+      - name: Feste Debug-Signatur wiederherstellen
+        run: base64 --decode app/debug.keystore.b64 > app/debug.keystore
+
       - name: Debug-APK bauen
         id: buildapk
         continue-on-error: true

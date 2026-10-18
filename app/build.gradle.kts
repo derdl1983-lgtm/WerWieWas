@@ -16,6 +16,17 @@ android {
         versionName = "0.1.0"
     }
 
+    // Festes Debug-Keystore: Ohne das signiert jeder CI-Lauf mit einem neuen Zufallsschlüssel,
+    // und neue APKs lassen sich nicht über die installierte Version drüberinstallieren.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
