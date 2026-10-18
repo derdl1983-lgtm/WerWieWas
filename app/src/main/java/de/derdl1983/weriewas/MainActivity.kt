@@ -168,7 +168,7 @@ class MainActivity : ComponentActivity() {
                 result
             }
             if (path == null) {
-                Toast.makeText(this@MainActivity, "Bild nicht lesbar: \${de.derdl1983.weriewas.util.Images.lastError ?: "unbekannter Fehler"}", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "Bild nicht lesbar: ${de.derdl1983.weriewas.util.Images.lastError ?: "unbekannter Fehler"}", Toast.LENGTH_LONG).show()
             } else {
                 currentScreen = Screen.Analyze(path)
             }
