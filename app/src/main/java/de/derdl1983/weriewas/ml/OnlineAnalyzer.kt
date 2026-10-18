@@ -93,18 +93,16 @@ object OnlineAnalyzer {
 
     /** Mistral und alle OpenAI-kompatiblen APIs (chat/completions, Bild als Data-URL). */
     private fun requestChatCompletions(config: ProviderConfig, dataUrl: String): String {
+        val textPart = JSONObject().put("type", "text").put("text", PROMPT)
+        val imagePart = JSONObject().put("type", "image_url").put("image_url", dataUrl)
+        val contentParts = JSONArray().put(textPart).put(imagePart)
+        val message = JSONObject().put("role", "user").put("content", contentParts)
+        val messages = JSONArray().put(message)
         val body = JSONObject()
             .put("model", config.model)
             .put("temperature", 0.2)
             .put("max_tokens", 2000)
-            .put("messages", JSONArray().put(
-                JSONObject()
-                    .put("role", "user")
-                    .put("content", JSONArray()
-                        .put(JSONObject().put("type", "text").put("text", PROMPT))
-                        .put(JSONObject().put("type", "image_url").put("image_url", dataUrl))
-                    )
-            ))
+            .put("messages", messages)
         val conn = openPost(config.baseUrl + "/chat/completions", config.apiKey)
         val text = sendAndRead(conn, body.toString())
         return JSONObject(text)
@@ -117,23 +115,26 @@ object OnlineAnalyzer {
     /** Google Gemini (generateContent, Bild als inline_data). */
     private fun requestGemini(config: ProviderConfig, dataUrl: String): String {
         val base64 = dataUrl.substringAfter("base64,")
+        val textPart = JSONObject().put("text", PROMPT)
+        val inlineData = JSONObject().put("mime_type", "image/jpeg").put("data", base64)
+        val imagePart = JSONObject().put("inline_data", inlineData)
+        val parts = JSONArray().put(textPart).put(imagePart)
+        val content = JSONObject().put("parts", parts)
+        val contents = JSONArray().put(content)
+        val generationConfig = JSONObject().put("temperature", 0.2)
         val body = JSONObject()
-            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray()
-                .put(JSONObject().put("text", PROMPT))
-                .put(JSONObject().put("inline_data",
-                    JSONObject().put("mime_type", "image/jpeg").put("data", base64)))))
-            .put("generationConfig", JSONObject().put("temperature", 0.2))
+            .put("contents", contents)
+            .put("generationConfig", generationConfig)
         val url = config.baseUrl + "/models/" + config.model + ":generateContent?key=" + config.apiKey
         val conn = openPost(url, "")
         val text = sendAndRead(conn, body.toString())
-        val parts = JSONObject(text)
-            .getJSONArray("candidates")
-            .getJSONObject(0)
+        val candidates = JSONObject(text).getJSONArray("candidates")
+        val responseParts = candidates.getJSONObject(0)
             .getJSONObject("content")
             .getJSONArray("parts")
         val sb = StringBuilder()
-        for (i in 0 until parts.length()) {
-            sb.append(parts.getJSONObject(i).optString("text"))
+        for (i in 0 until responseParts.length()) {
+            sb.append(responseParts.getJSONObject(i).optString("text"))
         }
         return sb.toString()
     }
