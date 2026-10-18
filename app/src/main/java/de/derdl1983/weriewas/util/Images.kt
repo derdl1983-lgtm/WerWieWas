@@ -38,14 +38,10 @@ object Images {
                 val source = ImageDecoder.createSource(context.contentResolver, uri)
                 val sized = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
                     decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                    val longest = maxOf(info.size.width, info.size.height)
-                    if (longest > maxDim) {
-                        val scale = maxDim.toFloat() / longest
-                        decoder.setTargetResize(
-                            (info.size.width * scale).toInt().coerceAtLeast(1),
-                            (info.size.height * scale).toInt().coerceAtLeast(1)
-                        )
-                    }
+                    // setTargetSampleSize (API 28+) statt setTargetResize (API 31+):
+                    // gleiche Wirkung über Zweierpotenzen-Untersampling.
+                    val sample = sampleSize(info.size.width, info.size.height, maxDim)
+                    if (sample > 1) decoder.setTargetSampleSize(sample)
                 }
                 if (sized != null && !sized.isRecycled) return sized
             } catch (e: Exception) {
