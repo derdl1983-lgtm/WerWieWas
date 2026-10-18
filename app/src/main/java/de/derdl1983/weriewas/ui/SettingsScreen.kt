@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -41,13 +42,18 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import de.derdl1983.weriewas.data.DiscoveryStore
+import de.derdl1983.weriewas.ml.OnlineAnalyzer
 
-/** Einstellungen: optionaler Mistral-API-Schlüssel, Daten verwalten, Datenschutz. */
+/** Einstellungen: wählbarer KI-Anbieter mit API-Schlüssel, Daten verwalten, Datenschutz. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onClose: () -> Unit) {
     val context = LocalContext.current
-    var apiKey by rememberSaveable { mutableStateOf(getApiKey(context)) }
+    val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
+    var provider by rememberSaveable { mutableStateOf(OnlineAnalyzer.currentProvider(context)) }
+    var model by rememberSaveable { mutableStateOf(prefs.getString("ai_model", "") ?: "") }
+    var baseUrl by rememberSaveable { mutableStateOf(prefs.getString("ai_base_url", "") ?: "") }
+    var apiKey by rememberSaveable { mutableStateOf(OnlineAnalyzer.apiKeyFor(context, provider)) }
     var showClear by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -76,21 +82,74 @@ fun SettingsScreen(onClose: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        "Optionale Online-Tiefenanalyse (Mistral)",
+                        "Optionale Online-Tiefenanalyse (KI)",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
                         "Die App erkennt Objekte standardmäßig komplett offline. " +
-                            "Wenn du möchtest, kannst du einen eigenen Mistral-API-Schlüssel hinterlegen: " +
+                            "Wenn du möchtest, kannst du einen eigenen API-Schlüssel hinterlegen: " +
                             "Bei unsicheren Erkennungen fragt dich die App dann pro Foto, " +
-                            "ob sie eine genauere Analyse online durchführen darf.",
+                            "ob sie eine genauere Analyse online durchführen darf. " +
+                            "Du kannst zwischen verschiedenen KI-Anbietern wählen.",
                         style = MaterialTheme.typography.bodyMedium
                     )
+                    Text(
+                        "Anbieter",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OnlineAnalyzer.PROVIDERS.forEach { p ->
+                            if (p == provider) {
+                                Button(
+                                    onClick = { },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text(OnlineAnalyzer.label(p)) }
+                            } else {
+                                OutlinedButton(
+                                    onClick = {
+                                        provider = p
+                                        model = ""
+                                        baseUrl = ""
+                                        apiKey = OnlineAnalyzer.apiKeyFor(context, p)
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text(OnlineAnalyzer.label(p)) }
+                            }
+                        }
+                    }
+                    Text(
+                        when (provider) {
+                            "openai" -> "Funktioniert mit jedem OpenAI-kompatiblen Dienst " +
+                                "(OpenAI, OpenRouter, Groq, lokaler Server). " +
+                                "Bei einem anderen Dienst dessen Basis-URL eintragen."
+                            "gemini" -> "Google Gemini mit eigenem API-Schlüssel aus Google AI Studio."
+                            else -> "Mistral mit Bildverständnis-Modell (Standard)."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    OutlinedTextField(
+                        value = model,
+                        onValueChange = { model = it.trim() },
+                        label = { Text("Modell (leer = Standard: " + OnlineAnalyzer.defaultModel(provider) + ")") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (provider == "openai") {
+                        OutlinedTextField(
+                            value = baseUrl,
+                            onValueChange = { baseUrl = it.trim() },
+                            label = { Text("Basis-URL (leer = https://api.openai.com/v1)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                     OutlinedTextField(
                         value = apiKey,
                         onValueChange = { apiKey = it.trim() },
-                        label = { Text("Mistral-API-Schlüssel") },
+                        label = { Text("API-Schlüssel (" + OnlineAnalyzer.label(provider) + ")") },
                         singleLine = true,
                         visualTransformation = if (apiKey.isBlank()) {
                             VisualTransformation.None
@@ -102,36 +161,35 @@ fun SettingsScreen(onClose: () -> Unit) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
-                                context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-                                    .edit()
-                                    .putString("mistral_api_key", apiKey)
+                                prefs.edit()
+                                    .putString("ai_provider", provider)
+                                    .putString("ai_model", model)
+                                    .putString("ai_base_url", baseUrl)
+                                    .putString(provider + "_api_key", apiKey)
                                     .apply()
-                                Toast.makeText(context, "API-Schlüssel gespeichert.", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Einstellungen gespeichert.", Toast.LENGTH_SHORT).show()
                             },
                             enabled = apiKey.isNotBlank()
                         ) { Text("Speichern") }
                         OutlinedButton(
                             onClick = {
-                                context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-                                    .edit()
-                                    .remove("mistral_api_key")
-                                    .apply()
+                                prefs.edit().remove(provider + "_api_key").apply()
                                 apiKey = ""
                                 Toast.makeText(context, "API-Schlüssel entfernt.", Toast.LENGTH_SHORT).show()
                             },
-                            enabled = apiKey.isNotBlank() || getApiKey(context).isNotBlank()
+                            enabled = apiKey.isNotBlank()
                         ) { Text("Entfernen") }
                     }
                     TextButton(
                         onClick = {
                             runCatching {
                                 context.startActivity(
-                                    Intent(Intent.ACTION_VIEW, Uri.parse("https://console.mistral.ai/"))
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(OnlineAnalyzer.consoleUrl(provider)))
                                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 )
                             }
                         }
-                    ) { Text("Schlüssel kostenlos erstellen: console.mistral.ai") }
+                    ) { Text("Schlüssel kostenlos erstellen") }
                 }
             }
 
@@ -147,6 +205,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                     )
                     Text(
                         "Alle Fotos und Entdeckungen liegen ausschließlich im App-internen Speicher deines Geräts. " +
+                            "Exportierte Erklärvideos werden in deiner Mediathek gespeichert. " +
                             "Ein Backup oder eine Übertragung auf andere Geräte ist nicht vorgesehen.",
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -173,7 +232,8 @@ fun SettingsScreen(onClose: () -> Unit) {
                         "Wer Wie Was sendet ohne deine ausdrückliche Zustimmung keine Daten an Dritte. " +
                             "Die Bilderkennung läuft lokal auf dem Gerät.\n\n" +
                             "Fotos verlassen dein Gerät nur dann, wenn du die optionale Online-Analyse " +
-                            "aktiviert hast UND vor jedem einzelnen Foto ausdrücklich zustimmst. " +
+                            "aktiviert hast UND vor jedem einzelnen Foto ausdrücklich zustimmst – " +
+                            "dann nur an den von dir gewählten KI-Anbieter. " +
                             "Der API-Schlüssel wird ausschließlich lokal gespeichert.\n\n" +
                             "Es gibt kein Tracking, keine Werbung und keine Konten. " +
                             "Details stehen in der Datei DATENSCHUTZ.md im Projekt-Repository.",
@@ -181,6 +241,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                     )
                 }
             }
+            Spacer(Modifier.height(8.dp))
         }
     }
 

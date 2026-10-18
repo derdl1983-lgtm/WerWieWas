@@ -44,10 +44,9 @@ import de.derdl1983.weriewas.util.Images
 import kotlinx.coroutines.launch
 import java.util.UUID
 
-/** Liest den optionalen Mistral-API-Schlüssel aus den App-Einstellungen. */
+/** Liest den API-Schlüssel des aktuell gewählten KI-Anbieters aus den App-Einstellungen. */
 fun getApiKey(context: Context): String =
-    context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-        .getString("mistral_api_key", "") ?: ""
+    OnlineAnalyzer.apiKeyFor(context, OnlineAnalyzer.currentProvider(context))
 
 /** Analyse-Screen: erkennt das Foto lokal und fragt bei Unsicherheit ggf. um Einwilligung. */
 @Composable
@@ -79,7 +78,7 @@ fun AnalyzeScreen(
     LaunchedEffect(imagePath) {
         try {
             val result = ImageAnalyzer.analyze(imagePath)
-            if (result.explanation.uncertain && getApiKey(context).isNotBlank()) {
+            if (result.explanation.uncertain && OnlineAnalyzer.isConfigured(context)) {
                 pendingResult = result
                 waitingForConsent = true
             } else {
@@ -97,8 +96,9 @@ fun AnalyzeScreen(
             text = {
                 Text(
                     "Die lokale Erkennung ist sich bei diesem Foto nicht ganz sicher.\n\n" +
-                        "Mit deiner Erlaubnis wird das Foto einmalig an die Mistral-API geschickt, " +
-                        "um eine genauere Analyse zu erhalten. Dafür ist dein eigener API-Schlüssel hinterlegt.\n\n" +
+                        "Mit deiner Erlaubnis wird das Foto einmalig an den in den Einstellungen " +
+                        "gewählten KI-Anbieter geschickt, um eine genauere Analyse zu erhalten. " +
+                        "Dafür ist dein eigener API-Schlüssel hinterlegt.\n\n" +
                         "Ohne Erlaubnis behalten wir die lokale Analyse."
                 )
             },
@@ -107,10 +107,11 @@ fun AnalyzeScreen(
                     onClick = {
                         waitingForConsent = false
                         val localResult = pendingResult
-                        if (localResult != null) {
+                        val config = OnlineAnalyzer.loadConfig(context)
+                        if (localResult != null && config != null) {
                             scope.launch {
                                 val online = try {
-                                    OnlineAnalyzer.analyze(imagePath, getApiKey(context))
+                                    OnlineAnalyzer.analyze(imagePath, config)
                                 } catch (e: Exception) {
                                     Toast.makeText(
                                         context,
@@ -123,6 +124,8 @@ fun AnalyzeScreen(
                                     if (online != null) AnalysisResult(localResult.labels, online) else localResult
                                 )
                             }
+                        } else if (localResult != null) {
+                            saveAndFinish(localResult)
                         }
                     }
                 ) { Text("Ja, online analysieren") }
