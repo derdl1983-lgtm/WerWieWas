@@ -26,7 +26,17 @@ object OnlineAnalyzer {
         val provider: String,
         val model: String,
         val baseUrl: String,
-        val apiKey: String
+        val apiKey: String,
+        val profilePrompt: String = ""
+    )
+
+    /** Persönliches Antwortprofil des Nutzers aus den Einstellungen. */
+    data class ProfileConfig(
+        val audience: String = "all",
+        val level: String = "laie",
+        val tone: String = "sachlich",
+        val role: String = "erzaehler",
+        val custom: String = ""
     )
 
     val PROVIDERS = listOf("mistral", "openai", "gemini")
@@ -71,6 +81,49 @@ object OnlineAnalyzer {
     fun apiKeyFor(context: Context, provider: String): String =
         prefs(context).getString(provider + "_api_key", "") ?: ""
 
+    /** Lädt das gespeicherte Antwortprofil des Nutzers. */
+    fun loadProfile(context: Context): ProfileConfig {
+        val p = prefs(context)
+        return ProfileConfig(
+            audience = p.getString("ai_audience", "all") ?: "all",
+            level = p.getString("ai_level", "laie") ?: "laie",
+            tone = p.getString("ai_tone", "sachlich") ?: "sachlich",
+            role = p.getString("ai_role", "erzaehler") ?: "erzaehler",
+            custom = p.getString("ai_custom", "") ?: ""
+        )
+    }
+
+    /** Baut aus dem Profil zusätzliche Anweisungen für den KI-Prompt. */
+    private fun profilePrompt(profile: ProfileConfig): String {
+        val sb = StringBuilder()
+        when (profile.role) {
+            "detektiv" -> sb.append("Erzähle im Stil eines neugierigen Detektivs, der das Rätsel um das Objekt löst: spannend, aber immer korrekt.\n")
+            "professor" -> sb.append("Erzähle im Stil eines freundlichen Professors: fundiert, gern mit kleinen Fachbegriffen, die du sofort erklärst.\n")
+            "freund" -> sb.append("Erzähle so, wie ein guter Freund es erklären würde: locker, persönlich mit „du“ und Alltagsbeispielen.\n")
+        }
+        when (profile.audience) {
+            "kind" -> sb.append("Zielgruppe: Kinder von 8 bis 12 Jahren. Nutze kurze, einfache Sätze und viele Alltagsbeispiele.\n")
+            "jugend" -> sb.append("Zielgruppe: Jugendliche. Sprich locker und informativ.\n")
+            "senior" -> sb.append("Zielgruppe: ältere Menschen. Sprich respektvoll mit „Sie“, ruhig und deutlich.\n")
+            else -> sb.append("Zielgruppe: Erwachsene.\n")
+        }
+        when (profile.level) {
+            "fortgeschritten" -> sb.append("Vorwissen: fortgeschritten. Du darfst Fachbegriffe verwenden und erklärst sie kurz.\n")
+            "experte" -> sb.append("Vorwissen: Experte. Du darfst technische Details und Fachsprache verwenden.\n")
+            else -> sb.append("Vorwissen: Laie. Erkläre alles Schritt für Schritt ohne Vorwissen.\n")
+        }
+        when (profile.tone) {
+            "lustig" -> sb.append("Ton: humorvoll und mit Charme – aber immer sachlich korrekt.\n")
+            "kurz" -> sb.append("Ton: kurz und knackig, keine überflüssigen Wörter.\n")
+            "ausfuehrlich" -> sb.append("Ton: ausführlich und gründlich, mit Beispielen.\n")
+            else -> sb.append("Ton: sachlich und freundlich.\n")
+        }
+        if (profile.custom.isNotBlank()) {
+            sb.append("Persönliche Hinweise des Nutzers: ").append(profile.custom.trim()).append("\n")
+        }
+        return sb.toString()
+    }
+
     /** Lädt die gespeicherte Konfiguration; null, wenn kein API-Schlüssel hinterlegt ist. */
     fun loadConfig(context: Context): ProviderConfig? {
         val provider = currentProvider(context)
@@ -84,12 +137,20 @@ object OnlineAnalyzer {
             "gemini" -> "https://generativelanguage.googleapis.com/v1beta"
             else -> "https://api.mistral.ai/v1"
         }
-        return ProviderConfig(provider, model, baseUrl.trimEnd('/'), key)
+        return ProviderConfig(
+            provider,
+            model,
+            baseUrl.trimEnd('/'),
+            key,
+            profilePrompt(loadProfile(context))
+        )
     }
 
     fun isConfigured(context: Context): Boolean = loadConfig(context) != null
 
-    private val PROMPT = "Du bist ein hilfreicher Erklärassistent für die App „Wer Wie Was“.\nAnalysiere das Foto und beantworte: Was ist das, wie funktioniert es, wofür wird es verwendet?\nAntworte AUSSCHLIESSLICH mit einem JSON-Objekt (ohne Markdown, ohne Erklärtext) mit genau diesen Feldern:\n{\"title\": \"Kurzer deutscher Name des Objekts\", \"category\": \"Kategorie (z. B. Haushalt, Werkzeug, Elektronik, Natur, Lebensmittel, Sport, Kleidung, Verkehr, Medizin)\", \"summary\": \"2-3 Sätze: Was ist das Objekt?\", \"howItWorks\": \"2-4 Sätze: Wie funktioniert es?\", \"usage\": \"1-3 Sätze: Wofür wird es typischerweise verwendet?\", \"practical\": \"1-2 praktische Tipps für den Alltag\", \"facts\": [\"2-3 kurze interessante Fakten\"], \"safety\": \"Sicherheitshinweise (bei Lebensmitteln, Pilzen, Medikamenten, Chemikalien, Tieren, Werkzeugen: deutliche Warnung)\", \"uncertain\": true falls du dir nicht sicher bist, sonst false}\nSchreibe alles auf Deutsch und für Laien verständlich."
+    private val PROMPT = "Du bist ein hilfreicher Erklärassistent für die App „Wer Wie Was“.\nAnalysiere das Foto und beantworte: Was ist das, wie funktioniert es, wofür wird es verwendet?\nAntworte AUSSCHLIESSLICH mit einem JSON-Objekt (ohne Markdown, ohne Erklärtext) mit genau diesen Feldern:\n{\"title\": \"Kurzer deutscher Name des Objekts\", \"category\": \"Kategorie (z. B. Haushalt, Werkzeug, Elektronik, Natur, Lebensmittel, Sport, Kleidung, Verkehr, Medizin)\", \"summary\": \"2-3 Sätze: Was ist das Objekt?\", \"howItWorks\": \"2-4 Sätze: Wie funktioniert es?\", \"usage\": \"1-3 Sätze: Wofür wird es typischerweise verwendet?\", \"practical\": \"1-2 praktische Tipps für den Alltag\", \"facts\": [\"2-3 kurze interessante Fakten\"], \"safety\": \"Sicherheitshinweise (bei Lebensmitteln, Pilzen, Medikamenten, Chemikalien, Tieren, Werkzeugen: deutliche Warnung)\", \"uncertain\": true falls du dir nicht sicher bist, sonst false}\nSchreibe alles auf Deutsch."
+
+    private fun promptFor(config: ProviderConfig): String = PROMPT + config.profilePrompt
 
     /** Führt die Tiefenanalyse für ein lokal gespeichertes Foto mit dem gewählten Anbieter aus. */
     suspend fun analyze(imagePath: String, config: ProviderConfig): Explanation =
@@ -106,7 +167,7 @@ object OnlineAnalyzer {
 
     /** Mistral und alle OpenAI-kompatiblen APIs (chat/completions, Bild als Data-URL). */
     private fun requestChatCompletions(config: ProviderConfig, dataUrl: String): String {
-        val textPart = JSONObject().put("type", "text").put("text", PROMPT)
+        val textPart = JSONObject().put("type", "text").put("text", promptFor(config))
         val imagePart = JSONObject().put("type", "image_url").put("image_url", dataUrl)
         val contentParts = JSONArray().put(textPart).put(imagePart)
         val message = JSONObject().put("role", "user").put("content", contentParts)
@@ -128,7 +189,7 @@ object OnlineAnalyzer {
     /** Google Gemini (generateContent, Bild als inline_data). */
     private fun requestGemini(config: ProviderConfig, dataUrl: String): String {
         val base64 = dataUrl.substringAfter("base64,")
-        val textPart = JSONObject().put("text", PROMPT)
+        val textPart = JSONObject().put("text", promptFor(config))
         val inlineData = JSONObject().put("mime_type", "image/jpeg").put("data", base64)
         val imagePart = JSONObject().put("inline_data", inlineData)
         val parts = JSONArray().put(textPart).put(imagePart)

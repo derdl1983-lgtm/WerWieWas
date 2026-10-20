@@ -48,7 +48,34 @@ import androidx.compose.ui.unit.dp
 import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
 
-/** Einstellungen: Stimmen, wählbarer KI-Anbieter mit API-Schlüssel, Daten verwalten, Datenschutz. */
+/** Auswahlliste einer Profil-Eigenschaft (aktuelle Wahl ist hervorgehoben). */
+@Composable
+private fun ProfileChoice(
+    title: String,
+    options: List<Pair<String, String>>,
+    current: String,
+    onSelect: (String) -> Unit
+) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        options.forEach { (key, label) ->
+            if (key == current) {
+                Button(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text(label) }
+            } else {
+                OutlinedButton(
+                    onClick = { onSelect(key) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text(label) }
+            }
+        }
+    }
+}
+
+/** Einstellungen: Stimmen, KI-Profil & Antwortstil, wählbarer KI-Anbieter mit API-Schlüssel, Daten verwalten, Datenschutz. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onClose: () -> Unit) {
@@ -59,6 +86,32 @@ fun SettingsScreen(onClose: () -> Unit) {
     var baseUrl by rememberSaveable { mutableStateOf(prefs.getString("ai_base_url", "") ?: "") }
     var apiKey by rememberSaveable { mutableStateOf(OnlineAnalyzer.apiKeyFor(context, provider)) }
     var showClear by remember { mutableStateOf(false) }
+
+    // KI-Profil & Antwortstil
+    var audience by rememberSaveable { mutableStateOf(prefs.getString("ai_audience", "all") ?: "all") }
+    var level by rememberSaveable { mutableStateOf(prefs.getString("ai_level", "laie") ?: "laie") }
+    var tone by rememberSaveable { mutableStateOf(prefs.getString("ai_tone", "sachlich") ?: "sachlich") }
+    var role by rememberSaveable { mutableStateOf(prefs.getString("ai_role", "erzaehler") ?: "erzaehler") }
+    var custom by rememberSaveable { mutableStateOf(prefs.getString("ai_custom", "") ?: "") }
+
+    fun saveProfileValue(key: String, value: String) {
+        prefs.edit().putString(key, value).apply()
+    }
+
+    fun resetProfile() {
+        audience = "all"
+        level = "laie"
+        tone = "sachlich"
+        role = "erzaehler"
+        custom = ""
+        prefs.edit()
+            .remove("ai_audience")
+            .remove("ai_level")
+            .remove("ai_tone")
+            .remove("ai_role")
+            .remove("ai_custom")
+            .apply()
+    }
 
     // Verfügbare deutsche Stimmen der Sprachausgabe laden
     var germanVoices by remember { mutableStateOf<List<Voice>>(emptyList()) }
@@ -167,6 +220,98 @@ fun SettingsScreen(onClose: () -> Unit) {
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                         )
+                    }
+                }
+            }
+
+            // ---------- KI-Profil & Antwortstil ----------
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "KI-Profil & Antwortstil",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "Hier legst du fest, wie dir die KI antwortet: Zielgruppe, Vorwissen, Ton und " +
+                            "Erzählstil. Zusätzlich kannst du eigene Hinweise hinterlegen " +
+                            "(z. B. Interessen, gewünschte Anrede, Lieblingsthemen). " +
+                            "Gilt für die optionale Online-Tiefenanalyse.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    ProfileChoice(
+                        "Erzählstil",
+                        listOf(
+                            "erzaehler" to "Erzähler (Standard)",
+                            "detektiv" to "Detektiv",
+                            "professor" to "Professor",
+                            "freund" to "Guter Freund"
+                        ),
+                        role
+                    ) {
+                        role = it
+                        saveProfileValue("ai_role", it)
+                    }
+                    ProfileChoice(
+                        "Zielgruppe",
+                        listOf(
+                            "all" to "Erwachsene",
+                            "kind" to "Kinder (8-12 Jahre)",
+                            "jugend" to "Jugendliche",
+                            "senior" to "Senioren"
+                        ),
+                        audience
+                    ) {
+                        audience = it
+                        saveProfileValue("ai_audience", it)
+                    }
+                    ProfileChoice(
+                        "Vorwissen",
+                        listOf(
+                            "laie" to "Laie",
+                            "fortgeschritten" to "Fortgeschritten",
+                            "experte" to "Experte"
+                        ),
+                        level
+                    ) {
+                        level = it
+                        saveProfileValue("ai_level", it)
+                    }
+                    ProfileChoice(
+                        "Ton",
+                        listOf(
+                            "sachlich" to "Sachlich",
+                            "lustig" to "Lustig",
+                            "kurz" to "Kurz & knackig",
+                            "ausfuehrlich" to "Ausführlich"
+                        ),
+                        tone
+                    ) {
+                        tone = it
+                        saveProfileValue("ai_tone", it)
+                    }
+                    OutlinedTextField(
+                        value = custom,
+                        onValueChange = { custom = it },
+                        label = { Text("Eigene Hinweise (z. B. Interessen, Anrede, Themen)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                saveProfileValue("ai_custom", custom.trim())
+                                Toast.makeText(context, "KI-Profil gespeichert.", Toast.LENGTH_SHORT).show()
+                            }
+                        ) { Text("Profil speichern") }
+                        OutlinedButton(
+                            onClick = {
+                                resetProfile()
+                                Toast.makeText(context, "KI-Profil zurückgesetzt.", Toast.LENGTH_SHORT).show()
+                            }
+                        ) { Text("Zurücksetzen") }
                     }
                 }
             }
