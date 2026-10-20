@@ -43,6 +43,19 @@ object OnlineAnalyzer {
         else -> "pixtral-12b-2409"
     }
 
+    /** Gängige Sprachmodelle je Anbieter für die Schnellauswahl in den Einstellungen. */
+    fun suggestedModels(provider: String): List<String> = when (provider) {
+        "openai" -> listOf("gpt-4o-mini", "gpt-4o", "gpt-4.1-mini")
+        "gemini" -> listOf(
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-flash"
+        )
+        else -> listOf("pixtral-12b-2409", "mistral-small-latest", "mistral-large-latest")
+    }
+
     fun consoleUrl(provider: String): String = when (provider) {
         "openai" -> "https://platform.openai.com/api-keys"
         "gemini" -> "https://aistudio.google.com/apikey"

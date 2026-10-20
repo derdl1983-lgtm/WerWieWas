@@ -1,5 +1,6 @@
 package de.derdl1983.weriewas.ui
 
+import android.content.Context
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -37,6 +39,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -133,6 +136,7 @@ fun VideoScreen(
     val slides = remember(discovery.id) { buildSlides(discovery) }
     val bitmap = remember(discovery.id) { Images.loadThumbnail(discovery.imagePath, 720) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
     val speedLabels = remember {
         mapOf(0.75f to "0,75x", 1f to "1x", 1.25f to "1,25x", 1.5f to "1,5x", 2f to "2x")
     }
@@ -193,9 +197,13 @@ fun VideoScreen(
                         emptyList<Voice>()
                     }
                     val sorted = germanVoices.sortedBy { it.name }
-                    if (sorted.isNotEmpty()) voiceA = sorted[0]
-                    if (sorted.size > 1) voiceB = sorted[1]
-                    dualVoices = sorted.size > 1
+                    if (sorted.isNotEmpty()) {
+                        val nameA = prefs.getString("tts_voice_a", null)
+                        val nameB = prefs.getString("tts_voice_b", null)
+                        voiceA = sorted.firstOrNull { it.name == nameA } ?: sorted[0]
+                        voiceB = sorted.firstOrNull { it.name == nameB } ?: sorted.getOrNull(1)
+                        dualVoices = sorted.size > 1
+                    }
                     ttsEngine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                         override fun onDone(utteranceId: String?) {
                             if (utteranceId?.startsWith("slide_") == true) {
@@ -326,7 +334,30 @@ fun VideoScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { if (page > 0) page -= 1 },
+                    enabled = page > 0
+                ) { Text("⏮") }
+                Slider(
+                    value = page.toFloat(),
+                    onValueChange = { page = it.toInt().coerceIn(0, slides.size - 1) },
+                    valueRange = 0f..(slides.size - 1).toFloat(),
+                    steps = (slides.size - 2).coerceAtLeast(0),
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(
+                    onClick = { if (page < slides.size - 1) page += 1 },
+                    enabled = page < slides.size - 1
+                ) { Text("⏭") }
+            }
+            Spacer(Modifier.height(12.dp))
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -372,7 +403,8 @@ fun VideoScreen(
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "Moderator und Erklärbär wechseln sich pro Szene ab." +
+                text = "Moderator und Erklärbär wechseln sich pro Szene ab. " +
+                    "Die Stimmen kannst du in den Einstellungen wählen." +
                     (if (voiceB == null) " Auf diesem Gerät ist nur eine deutsche Stimme installiert – die zweite wird dann über die Tonhöhe simuliert." else ""),
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center,

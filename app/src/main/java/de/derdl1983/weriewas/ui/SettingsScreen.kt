@@ -3,6 +3,8 @@ package de.derdl1983.weriewas.ui
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -26,11 +28,13 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,7 +48,7 @@ import androidx.compose.ui.unit.dp
 import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
 
-/** Einstellungen: wählbarer KI-Anbieter mit API-Schlüssel, Daten verwalten, Datenschutz. */
+/** Einstellungen: Stimmen, wählbarer KI-Anbieter mit API-Schlüssel, Daten verwalten, Datenschutz. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onClose: () -> Unit) {
@@ -55,6 +59,50 @@ fun SettingsScreen(onClose: () -> Unit) {
     var baseUrl by rememberSaveable { mutableStateOf(prefs.getString("ai_base_url", "") ?: "") }
     var apiKey by rememberSaveable { mutableStateOf(OnlineAnalyzer.apiKeyFor(context, provider)) }
     var showClear by remember { mutableStateOf(false) }
+
+    // Verfügbare deutsche Stimmen der Sprachausgabe laden
+    var germanVoices by remember { mutableStateOf<List<Voice>>(emptyList()) }
+    var voicesReady by remember { mutableStateOf(false) }
+    var voiceAName by remember { mutableStateOf(prefs.getString("tts_voice_a", "") ?: "") }
+    var voiceBName by remember { mutableStateOf(prefs.getString("tts_voice_b", "") ?: "") }
+    var pickA by remember { mutableStateOf(false) }
+    var pickB by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) {
+        var engine: TextToSpeech? = null
+        engine = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val e = engine
+                if (e != null) {
+                    germanVoices = try {
+                        e.voices?.filter { it.locale.language == "de" }?.sortedBy { it.name } ?: emptyList()
+                    } catch (ex: Exception) {
+                        emptyList<Voice>()
+                    }
+                    voicesReady = true
+                }
+            }
+        }
+        onDispose {
+            engine?.stop()
+            engine?.shutdown()
+        }
+    }
+
+    fun displayName(name: String): String {
+        val v = germanVoices.firstOrNull { it.name == name }
+        return v?.name?.replace("de-de-x-", "")?.replace("#", " ")?.ifBlank { name } ?: name
+    }
+
+    fun selectVoiceA(name: String) {
+        voiceAName = name
+        prefs.edit().putString("tts_voice_a", name).apply()
+    }
+
+    fun selectVoiceB(name: String) {
+        voiceBName = name
+        prefs.edit().putString("tts_voice_b", name).apply()
+    }
 
     Scaffold(
         topBar = {
@@ -76,6 +124,54 @@ fun SettingsScreen(onClose: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // ---------- Stimmen fürs Erklärvideo ----------
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Stimmen fürs Erklärvideo",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "Wähle, welche installierten Stimmen als Moderator und Erklärbär " +
+                            "im Erklärvideo abwechselnd sprechen.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (!voicesReady) {
+                        Text(
+                            "Sprachausgabe wird geladen …",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    } else if (germanVoices.isEmpty()) {
+                        Text(
+                            "Keine deutschen Stimmen gefunden. Installiere in den Android-Einstellungen " +
+                                "unter Sprachausgabe eine deutsche Stimme.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        OutlinedButton(
+                            onClick = { pickA = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Moderator: " + if (voiceAName.isBlank()) "(Standard)" else displayName(voiceAName)) }
+                        OutlinedButton(
+                            onClick = { pickB = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Erklärbär: " + if (voiceBName.isBlank()) "(Standard)" else displayName(voiceBName)) }
+                        Text(
+                            "Tipp: Mehr und bessere Stimmen bekommst du über die Google-App " +
+                                "oder ein Sprachpaket der Einstellungen-App (z. B. „Google Text-to-Speech“).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+            }
+
+            // ---------- KI-Anbieter ----------
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -124,7 +220,8 @@ fun SettingsScreen(onClose: () -> Unit) {
                             "openai" -> "Funktioniert mit jedem OpenAI-kompatiblen Dienst " +
                                 "(OpenAI, OpenRouter, Groq, lokaler Server). " +
                                 "Bei einem anderen Dienst dessen Basis-URL eintragen."
-                            "gemini" -> "Google Gemini mit eigenem API-Schlüssel aus Google AI Studio."
+                            "gemini" -> "Google Gemini mit eigenem API-Schlüssel aus Google AI Studio. " +
+                                "Das Sprachmodell kannst du unten wählen oder frei eintragen."
                             else -> "Mistral mit Bildverständnis-Modell (Standard)."
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -145,6 +242,24 @@ fun SettingsScreen(onClose: () -> Unit) {
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
+                    }
+                    val suggestions = OnlineAnalyzer.suggestedModels(provider)
+                    if (suggestions.size > 1) {
+                        Text(
+                            "Bekannte Modelle des Anbieters (antippen zum Übernehmen):",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                        suggestions.forEach { m ->
+                            if (m == model) {
+                                Button(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text(m) }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { model = m },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text(m) }
+                            }
+                        }
                     }
                     OutlinedTextField(
                         value = apiKey,
@@ -243,6 +358,50 @@ fun SettingsScreen(onClose: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
         }
+    }
+
+    if (pickA) {
+        AlertDialog(
+            onDismissRequest = { pickA = false },
+            title = { Text("Moderator-Stimme") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    germanVoices.forEach { v ->
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            RadioButton(selected = v.name == voiceAName, onClick = { selectVoiceA(v.name); pickA = false })
+                            TextButton(onClick = { selectVoiceA(v.name); pickA = false }) {
+                                Text(v.name, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { pickA = false }) { Text("Fertig") }
+            }
+        )
+    }
+
+    if (pickB) {
+        AlertDialog(
+            onDismissRequest = { pickB = false },
+            title = { Text("Erklärbär-Stimme") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    germanVoices.forEach { v ->
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            RadioButton(selected = v.name == voiceBName, onClick = { selectVoiceB(v.name); pickB = false })
+                            TextButton(onClick = { selectVoiceB(v.name); pickB = false }) {
+                                Text(v.name, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { pickB = false }) { Text("Fertig") }
+            }
+        )
     }
 
     if (showClear) {
