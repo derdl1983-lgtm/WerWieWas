@@ -15,7 +15,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -29,6 +28,12 @@ import java.util.concurrent.atomic.AtomicReference
  * Gratis Online-Sprachausgabe über den Lesedienst von Microsoft Edge (Edge-TTS):
  * sehr natürliche neuronale Stimmen, kein API-Schlüssel nötig, benötigt Internet.
  * Nutzt dieselbe Schnittstelle wie der Edge-Browser beim Vorlesen.
+ *
+ * Zugriffsschutz: Microsoft hat am 12.10.2026 auf das Sec-MS-GEC-Token Verfahren 2
+ * umgestellt. Das alte v1-Verfahren (einfaches SHA-256) wird seitdem mit
+ * 401 Unauthorized abgelehnt. Diese Implementierung erzeugt das v2-Token
+ * (CS64-Prüfsumme + angepasstes SHA-256) und korrigiert automatisch eine
+ * falsch gehende Geräte-Uhr anhand des Date-Headers der Server-Antwort.
  */
 object EdgeTTS {
 
@@ -53,18 +58,241 @@ object EdgeTTS {
         GERMAN_VOICES.firstOrNull { it.id == id }?.label ?: id
 
     private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491A6F4"
+    private const val WIN_EPOCH = 11644473600L
+    private const val CHROMIUM_FULL_VERSION = "143.0.3650.75"
+
+    // ---------- Konstanten des Sec-MS-GEC-v2-Verfahrens ----------
+    // Startzustand der angepassten SHA-256-Variante.
+    private val SHA256_INITIAL = "6A09E667 BB67AE85 3C6EF372 A54FF53A 510E527F 9B05688C 1F83D9AB 5BE0CD19"
+        .split(" ").map { it.toInt(16) }.toIntArray()
+    private val SHA256_STATE = "FD9FBEA2 91243CE7 BE499094 CD2E1E0A 6C006F49 04BD35AB FEB0A7E4 03EFFBD2"
+        .split(" ").map { it.toInt(16) }.toIntArray()
+    private val SHA256_SCHEDULE = "EB24BF9E 1558691F A0C09EE2 0CFA32BA A622EE8C D1DD9491 C0DD25A0 F9E70AB6 F0C31573 7058CE4E 7188E606 00E5AB33 D258B060 72766564"
+        .split(" ").map { it.toInt(16) }.toIntArray()
+    private val SHA256_ROUND_CONSTANTS = ("428A2F98 71374491 B5C0FBCF E9B5DBA5 3956C25B 59F111F1 923F82A4 AB1C5ED5" +
+        " D807AA98 12835B01 243185BE 550C7DC3 72BE5D74 80DEB1FE 9BDC06A7 C19BF174" +
+        " E49B69C1 EFBE4786 0FC19DC6 240CA1CC 2DE92C6F 4A7484AA 5CB0A9DC 76F988DA" +
+        " 983E5152 A831C66D B00327C8 BF597FC7 C6E00BF3 D5A79147 06CA6351 14292967" +
+        " 27B70A85 2E1B2138 4D2C6DFC 53380D13 650A7354 766A0ABB 81C2C92E 92722C85" +
+        " A2BFE8A1 A81A664B C24B8B70 C76C51A3 D192E819 D6990624 F40E3585 106AA070" +
+        " 19A4C116 1E376C08 2748774C 34B0BCB5 391C0CB3 4ED8AA4A 5B9CCA4F 682E6FF3" +
+        " 748F82EE 78A5636F 84C87814 8CC70208 90BEFFFA A4506CEB BEF9A3F7 C67178F2")
+        .split(" ").map { it.toInt(16) }.toIntArray()
+    private val SHA256_ADJUSTMENT = 0xC9DC06A7.toInt()
+    private val SIGMA0_ADJUSTMENT = 0x059C0B80.toInt()
+    private val SIGMA1_ADJUSTMENT = 0x000B92C0.toInt()
+
+    private val SHA256_BLOCK_CONSTANTS: IntArray = SHA256_ROUND_CONSTANTS.copyOf().also {
+        it[14] = SHA256_ADJUSTMENT
+    }
+
+    private val CS64_COEFFICIENTS: List<Pair<Int, Int>> = ("E82E91B1 B32700D0 44DE24C6 88DFF51D 3BEB65BC 29514038 C89C5933 B328CBDF" +
+        " 8D1EC211 D405B4D5 314EF5D5 26E55F3C E92491B1 607801C6 F0A5B9D5 82B2C1FB" +
+        " 06064CF3 FA51A3DA DA79FA60 207CC464 BED20560 3C3C74F3 89F9C9F8 D2D14B61" +
+        " 35FA38C6 BB04A2C1 CB49E3C6 C5626167")
+        .split(" ").map { it.toInt(16) }.chunked(2).map { p -> p[0] to p[1] }
+    private val CS64_FACTOR = 0x82893933.toInt()
+    private val CS64_ADJUSTMENT0 = 0xF2F90B1A.toInt()
+    private val CS64_ADJUSTMENT1 = 0x0B1A0000.toInt()
+
+    // ---------- Hilfsfunktionen (32-Bit-Arithmetik, Überlauf entspricht Modulo 2^32) ----------
+    private fun rol16(v: Int): Int = (v shl 16) or (v ushr 16)
+
+    private fun sigma0(v: Int): Int =
+        (v ushr 7) xor (v shl 25) xor (v ushr 18) xor (v shl 14) xor (v ushr 3)
+
+    private fun sigma1(v: Int): Int =
+        (v ushr 17) xor (v shl 15) xor (v ushr 19) xor (v shl 13) xor (v ushr 10)
+
+    private fun rotr(v: Int, n: Int): Int = (v ushr n) or (v shl (32 - n))
+
+    private fun leU32(b: ByteArray, off: Int): Int =
+        (b[off].toInt() and 0xff) or
+            ((b[off + 1].toInt() and 0xff) shl 8) or
+            ((b[off + 2].toInt() and 0xff) shl 16) or
+            ((b[off + 3].toInt() and 0xff) shl 24)
+
+    private fun beU32(b: ByteArray, off: Int): Int =
+        ((b[off].toInt() and 0xff) shl 24) or
+            ((b[off + 1].toInt() and 0xff) shl 16) or
+            ((b[off + 2].toInt() and 0xff) shl 8) or
+            (b[off + 3].toInt() and 0xff)
+
+    /** Erweitert die SHA-256-Wortliste (Standard-Sigma-Funktionen). */
+    private fun expandSchedule(words: IntArray, firstWord: Int) {
+        for (index in firstWord until 64) {
+            val x = words[index - 2]
+            val y = words[index - 15]
+            val s1 = (x ushr 17) xor (x shl 15) xor (x ushr 19) xor (x shl 13) xor (x ushr 10)
+            val s0 = (y ushr 7) xor (y shl 25) xor (y ushr 18) xor (y shl 14) xor (y ushr 3)
+            words[index] = s1 + words[index - 7] + s0 + words[index - 16]
+        }
+    }
+
+    /** Führt SHA-256-Runden aus (beginnt ggf. mitten im ersten Block). */
+    private fun shaRounds(state: IntArray, words: IntArray, firstRound: Int, constants: IntArray): IntArray {
+        var a = state[0]; var b = state[1]; var c = state[2]; var d = state[3]
+        var e = state[4]; var f = state[5]; var g = state[6]; var h = state[7]
+        for (i in firstRound until 64) {
+            val s1 = rotr(e, 6) xor rotr(e, 11) xor rotr(e, 25)
+            val ch = (e and f) xor g
+            val t1 = h + s1 + ch + constants[i] + words[i]
+            val s0 = rotr(a, 2) xor rotr(a, 13) xor rotr(a, 22)
+            val maj = (a and b) xor (a and c) xor (b and c)
+            val t2 = s0 + maj
+            h = g; g = f; f = e; e = d + t1
+            d = c; c = b; b = a; a = t1 + t2
+        }
+        return intArrayOf(a, b, c, d, e, f, g, h)
+    }
+
+    /** Anfangszustand der angepassten SHA-256-Variante aus den ersten 7 Bytes. */
+    private fun sha256Init(data: ByteArray): IntArray {
+        val words = IntArray(64)
+        words[14] = ((data[0].toInt() and 0xff) shl 16) or
+            ((data[1].toInt() and 0xff) shl 8) or
+            (data[2].toInt() and 0xff)
+        words[15] = beU32(data, 3)
+        for (index in 16..29) {
+            var value = SHA256_SCHEDULE[index - 16]
+            if (index - 2 >= 14) {
+                value += if (index == 16) sigma1(words[14]) xor SIGMA1_ADJUSTMENT else sigma1(words[index - 2])
+            }
+            if (index - 7 >= 14) value += words[index - 7]
+            if (index - 15 >= 14) {
+                value += if (index == 29) sigma0(words[14]) xor SIGMA0_ADJUSTMENT else sigma0(words[index - 15])
+            }
+            words[index] = value
+        }
+        words[30] = sigma1(words[28]) + words[23] + sigma0(words[15]) + words[14] +
+            SHA256_ADJUSTMENT - SHA256_ROUND_CONSTANTS[14]
+        expandSchedule(words, 31)
+        val working = shaRounds(SHA256_STATE, words, 14, SHA256_BLOCK_CONSTANTS)
+        val out = IntArray(8)
+        for (i in 0 until 8) out[i] = SHA256_INITIAL[i] + working[i]
+        return out
+    }
+
+    /** Angepasstes SHA-256 über die Token-Daten (Tickzahl + Trusted-Client-Token). */
+    private fun sha256Digest(data: ByteArray): ByteArray {
+        if (data.size < 7) throw IllegalArgumentException("Token-Daten zu kurz")
+        val length = 57 + data.size
+        val zeroCount = (((55 - length) % 64) + 64) % 64
+        val padded = ByteArray(data.size - 7 + 1 + zeroCount + 8)
+        var pos = 0
+        for (i in 7 until data.size) { padded[pos] = data[i]; pos++ }
+        padded[pos] = 0x80.toByte(); pos++
+        for (i in 0 until zeroCount) { padded[pos] = 0; pos++ }
+        val bits = (length * 8).toLong()
+        for (i in 0 until 8) { padded[pos] = (bits ushr (56 - 8 * i)).toByte(); pos++ }
+        var state = sha256Init(data)
+        var offset = 0
+        while (offset < padded.size) {
+            val words = IntArray(64)
+            for (i in 0 until 16) words[i] = beU32(padded, offset + 4 * i)
+            expandSchedule(words, 16)
+            val working = shaRounds(state, words, 0, SHA256_ROUND_CONSTANTS)
+            for (i in 0 until 8) state[i] = state[i] + working[i]
+            offset += 64
+        }
+        val out = ByteArray(32)
+        for (i in 0 until 8) {
+            val v = state[i]
+            out[4 * i] = (v ushr 24).toByte()
+            out[4 * i + 1] = (v ushr 16).toByte()
+            out[4 * i + 2] = (v ushr 8).toByte()
+            out[4 * i + 3] = v.toByte()
+        }
+        return out
+    }
+
+    /** Little-Endian-Wörter, auf gerade Anzahl aufgefüllt. */
+    private fun wordsLe4Even(data: ByteArray): List<Int> {
+        val pad = (4 - data.size % 4) % 4
+        val padded = data + ByteArray(pad)
+        val words = ArrayList<Int>()
+        var i = 0
+        while (i + 4 <= padded.size) { words.add(leU32(padded, i)); i += 4 }
+        if (words.size % 2 == 1) words.add(0)
+        return words
+    }
+
+    /** CS64-Prüfsumme: Rückgabe sind zwei 32-Bit-Wörter (Little-Endian zu hex). */
+    private fun cs64Digest(data: ByteArray, digest: ByteArray): IntArray {
+        val keyA = leU32(digest, 0) or 1
+        val keyB = leU32(digest, 4) or 1
+        val factors = intArrayOf(keyA * CS64_FACTOR, keyB * CS64_FACTOR)
+        val terms = ArrayList<Int>()
+        val offsets = ArrayList<Int>()
+        CS64_COEFFICIENTS.forEachIndexed { index, (coef, off) ->
+            terms.add(coef * factors[index % 2])
+            offsets.add(off)
+        }
+        val prefixed = ByteArray(data.size + 1)
+        prefixed[0] = 0
+        System.arraycopy(data, 0, prefixed, 1, data.size)
+        wordsLe4Even(prefixed).forEachIndexed { index, word ->
+            var term = if (index % 2 == 0) word * keyA else word * keyB
+            var offset = rol16(word) * (if (index % 2 == 0) 0xEF0569FB.toInt() else 0xC31713DB.toInt())
+            if (index == 0) {
+                term += CS64_ADJUSTMENT0 * factors[0]
+                offset += CS64_ADJUSTMENT1
+            }
+            terms.add(term)
+            offsets.add(offset)
+        }
+        var swapAcc = 0; var swapLast = 0; var state = 0; var acc = 0
+        var i = 0
+        while (i < terms.size) {
+            val x = terms[i]; val y = terms[i + 1]
+            var t = rol16(offsets[i] + x)
+            var q = t * 0x76F50F34.toInt()
+            swapAcc += rol16(q) * 0xC3EFEA97.toInt() + q
+            t = rol16(offsets[i + 1] + y)
+            q = t * 0x1881CE3C.toInt()
+            swapLast = rol16(q) * 0x35BD1EC9.toInt() + q
+            swapAcc += swapLast
+            state = state * keyA + x
+            state = rol16(state) * 0xCF98B111.toInt()
+            state = rol16(state) * 0x87085B9F.toInt()
+            state = rol16(state) * 0x12CEB96D.toInt()
+            state = rol16(state) * 0x257E1D83.toInt()
+            acc += state
+            t = state * keyB + y
+            t = rol16(t) * 0xA27416F5.toInt()
+            t = rol16(t) * 0xD38396FF.toInt()
+            state = rol16(rol16(t * 0x7C932B89.toInt()) * 0xBFA49F69.toInt())
+            acc += state
+            i += 2
+        }
+        return intArrayOf(swapLast xor state, swapAcc xor acc)
+    }
 
     /**
-     * Zugriffs-Token der Edge-Schnittstelle (Sec-MS-GEC).
-     * Der Zeitstempel muss auf 5-Minuten-Fenster (300 Sekunden) gerundet werden,
-     * sonst antwortet der Dienst mit 401 Unauthorized.
+     * Erzeugt das Sec-MS-GEC-Token nach dem seit 12.10.2026 gültigen Verfahren 2
+     * (Format: CS64-Prüfsumme + SHA-256, jeweils hexadezimal, durch Bindestrich getrennt).
+     * Der Zeitstempel wird auf ein 5-Minuten-Fenster gerundet; skewSeconds korrigiert
+     * eine falsch gehende Geräte-Uhr.
      */
-    private fun secMsGec(): String {
-        val unix = System.currentTimeMillis() / 1000L
-        val ticks = ((unix + 11644473600L + 300L) / 300L) * 300L * 10000000L
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest((ticks.toString() + TRUSTED_CLIENT_TOKEN).toByteArray(Charsets.US_ASCII))
+    fun secMsGecV2(skewSeconds: Long = 0L): String {
+        var ticks = System.currentTimeMillis() / 1000L + skewSeconds
+        ticks += WIN_EPOCH
+        ticks -= ticks % 300
+        ticks *= 10000000L
+        val data = (ticks.toString() + TRUSTED_CLIENT_TOKEN).toByteArray(Charsets.US_ASCII)
+        val digest = sha256Digest(data)
+        val cs = cs64Digest(data, digest)
         val sb = StringBuilder()
+        for (w in cs) {
+            var v = w
+            for (i in 0 until 4) {
+                val b = v and 0xff
+                if (b < 16) sb.append('0')
+                sb.append(Integer.toHexString(b).uppercase())
+                v = v ushr 8
+            }
+        }
+        sb.append('-')
         for (b in digest) {
             val v = b.toInt() and 0xff
             if (v < 16) sb.append('0')
@@ -84,15 +312,47 @@ object EdgeTTS {
 
     private fun requestId(): String = UUID.randomUUID().toString().replace("-", "")
 
+    /** Fehler, bei dem ein Retry mit korrigierter Uhrzeit sinnvoll ist. */
+    private class SkewException(message: String, val skewSeconds: Long) : IOException(message)
+
+    private class FailInfo(val code: Int?, val dateHeader: String?, val message: String?)
+
+    private fun parseServerDate(date: String?): Long? {
+        if (date == null) return null
+        return try {
+            val fmt = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss 'GMT'", Locale.US)
+            fmt.timeZone = TimeZone.getTimeZone("UTC")
+            fmt.parse(date)?.time?.div(1000L)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /**
      * Synthetisiert Text zu einer MP3-Datei (24 kHz, 48 kbit/s, mono).
      * Blockierend – im Hintergrund-Thread aufrufen. ratePercent: -50 bis +100.
+     * Bei 401/403 wird die Geräte-Uhr anhand der Server-Zeit korrigiert und
+     * automatisch ein zweiter Versuch gestartet.
      */
     fun synthesizeToMp3(text: String, voice: String, ratePercent: Int, outFile: File): File {
+        var skew = 0L
+        var last: SkewException? = null
+        for (attempt in 0 until 2) {
+            try {
+                return synthesizeOnce(text, voice, ratePercent, outFile, skew)
+            } catch (e: SkewException) {
+                skew = e.skewSeconds
+                last = e
+            }
+        }
+        throw IOException("Sprachsynthese fehlgeschlagen: " + (last?.message ?: "unbekannter Fehler"))
+    }
+
+    private fun synthesizeOnce(text: String, voice: String, ratePercent: Int, outFile: File, skewSeconds: Long): File {
         val url = ("wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
             + "?TrustedClientToken=" + TRUSTED_CLIENT_TOKEN
-            + "&Sec-MS-GEC=" + secMsGec()
-            + "&Sec-MS-GEC-Version=1-130.0.2849.68"
+            + "&Sec-MS-GEC=" + secMsGecV2(skewSeconds)
+            + "&Sec-MS-GEC-Version=2-" + CHROMIUM_FULL_VERSION
             + "&ConnectionId=" + requestId())
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -100,9 +360,14 @@ object EdgeTTS {
             .build()
         val audio = ByteArrayOutputStream()
         val done = CountDownLatch(1)
-        val failure = AtomicReference<String?>(null)
+        val failure = AtomicReference<FailInfo?>(null)
         val ws = client.newWebSocket(
-            Request.Builder().url(url).build(),
+            Request.Builder().url(url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
+                .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
+                .header("Pragma", "no-cache")
+                .header("Cache-Control", "no-cache")
+                .build(),
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     val ts = timestamp()
@@ -148,17 +413,7 @@ object EdgeTTS {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    val code = response?.code
-                    val hint = when (code) {
-                        401 -> "Zugriff verweigert (401): Token ungültig oder Uhrzeit falsch. Prüfe Datum/Uhrzeit deines Geräts und deine Internetverbindung."
-                        403 -> "Zugriff verweigert (403): Der Dienst wurde vom Anbieter gesperrt."
-                        else -> null
-                    }
-                    failure.set(
-                        "Verbindung fehlgeschlagen" +
-                            (if (code != null) " (HTTP " + code + ")" else "") +
-                            ": " + (hint ?: (t.message ?: "unbekannter Fehler"))
-                    )
+                    failure.set(FailInfo(response?.code, response?.header("Date"), t.message))
                     done.countDown()
                 }
 
@@ -172,7 +427,27 @@ object EdgeTTS {
                 throw IOException("Zeitüberschreitung bei der Sprachsynthese.")
             }
             val err = failure.get()
-            if (err != null) throw IOException(err)
+            if (err != null) {
+                val code = err.code
+                if (code == 401 || code == 403) {
+                    val server = parseServerDate(err.dateHeader)
+                    val hint = if (code == 401) {
+                        "Zugriff verweigert (401): Token oder Uhrzeit ungültig. Prüfe Datum, Uhrzeit und Zeitzone deines Geräts."
+                    } else {
+                        "Zugriff verweigert (403): Der Dienst wurde vom Anbieter gesperrt."
+                    }
+                    val msg = "Verbindung fehlgeschlagen (HTTP " + code + "): " + hint
+                    if (server != null) {
+                        throw SkewException(msg, server - System.currentTimeMillis() / 1000L)
+                    }
+                    throw IOException(msg)
+                }
+                throw IOException(
+                    "Verbindung fehlgeschlagen" +
+                        (if (code != null) " (HTTP " + code + ")" else "") +
+                        ": " + (err.message ?: "unbekannter Fehler")
+                )
+            }
             val mp3 = audio.toByteArray()
             if (mp3.size < 200) throw IOException("Keine Audiodaten empfangen.")
             outFile.parentFile?.mkdirs()
