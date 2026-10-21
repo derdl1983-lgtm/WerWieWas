@@ -1,4 +1,4 @@
-successfully downloaded text file (SHA: e50123e578870eb1c6cbe93d71e532dd333792bb)package de.derdl1983.weriewas.ui
+package de.derdl1983.weriewas.ui
 
 import android.content.Context
 import android.net.Uri

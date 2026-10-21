@@ -79,14 +79,23 @@ jobs:
         if: steps.buildapk.outputs.status != '0' || steps.buildrelease.outputs.status != '0'
         run: |
           rm -f last-build-error.log
-          if [ "${{ steps.buildapk.outputs.status }}" != "0" ]; then
+          if [ "${{ steps.buildapk.outputs.status }}" != "0" ] && [ -f build.log ]; then
             tail -n 400 build.log > last-build-error.log
           fi
-          if [ "${{ steps.buildrelease.outputs.status }}" != "0" ]; then
+          if [ "${{ steps.buildrelease.outputs.status }}" != "0" ] && [ -n "${{ steps.buildrelease.outputs.status }}" ] && [ -f release-build.log ]; then
             tail -n 400 release-build.log >> last-build-error.log
+          fi
+          if [ ! -f last-build-error.log ]; then
+            echo "Kein Build-Log vorhanden – nichts zu committen."
+            exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add last-build-error.log
+          if git diff --cached --quiet; then
+            echo "Fehler-Log unverändert – kein Commit nötig."
+            exit 0
+          fi
           git commit -m "[skip ci] Build-Fehlerprotokoll aktualisieren"
+          git pull --rebase --autostash origin main || true
           git push

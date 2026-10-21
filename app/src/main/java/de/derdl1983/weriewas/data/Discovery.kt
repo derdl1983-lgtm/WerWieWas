@@ -1,4 +1,4 @@
-successfully downloaded text file (SHA: 1044d7adfe0010e59c61cb52a35a475f69373b6f)package de.derdl1983.weriewas.data
+package de.derdl1983.weriewas.data
 
 import android.content.Context
 import org.json.JSONArray

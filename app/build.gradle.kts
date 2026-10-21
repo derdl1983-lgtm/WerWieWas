@@ -1,4 +1,4 @@
-successfully downloaded text file (SHA: e979c10105e20359ef15fd740837185ecf6b1565)plugins {
+plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")

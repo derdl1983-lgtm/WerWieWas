@@ -1,4 +1,4 @@
-successfully downloaded text file (SHA: ec9d263a5899a6194a9a91799ea504934deae0ea)package de.derdl1983.weriewas.ui
+package de.derdl1983.weriewas.ui
 
 import android.content.ActivityNotFoundException
 import android.content.ClipData

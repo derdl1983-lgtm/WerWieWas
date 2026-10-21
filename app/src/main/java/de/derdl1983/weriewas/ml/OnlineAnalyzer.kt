@@ -1,4 +1,4 @@
-successfully downloaded text file (SHA: 6ca6f9450f56325102879ed06ee252a881cb86ea)package de.derdl1983.weriewas.ml
+package de.derdl1983.weriewas.ml
 
 import android.content.Context
 import android.util.Base64
