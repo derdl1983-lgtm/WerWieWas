@@ -63,9 +63,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // Lokale, offline lauffähige Bilderkennung (Google ML Kit, gebündeltes Modell)
-    implementation("com.google.mlkit:image-labeling:17.0.9")
-
     // WebSocket-Client für die gratis Edge-TTS-Online-Stimmen
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
