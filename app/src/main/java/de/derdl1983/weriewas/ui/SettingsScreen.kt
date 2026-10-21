@@ -463,6 +463,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                         listOf(
                             "sachlich" to "Sachlich",
                             "lustig" to "Lustig",
+                            "verruckt" to "Verrückte Geschichte (frei erfunden)",
                             "kurz" to "Kurz & knackig",
                             "ausfuehrlich" to "Ausführlich"
                         ),
@@ -956,6 +957,7 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 }
+
 
 
 

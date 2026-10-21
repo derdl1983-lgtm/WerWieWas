@@ -164,6 +164,17 @@ object OnlineAnalyzer {
             )
             "kurz" -> sb.append("Ton: knackig wie eine Schlagzeile – kurze Sätze, null Füllwörter, jedes Wort muss sich seinen Platz verdienen.\n")
             "ausfuehrlich" -> sb.append("Ton: ausführlich und gründlich – greifbare Beispiele, echte Zusammenhänge, auch Details, die sonst unter den Tisch fallen.\n")
+            "verruckt" -> sb.append(
+                "Ton: RICHTIG verrückt – erfinde eine völlig absurde, haarsträubende Geschichte um das Objekt! " +
+                    "Behandle das Objekt als Hauptfigur einer frei erfundenen, überdrehten Spaß-Story: " +
+                    "mit skurrilen Nebenfiguren, unerwarteten Wendungen, absurden Schauplätzen und einem " +
+                    "grotesken Showdown. Für die Story darfst du die Realität bewusst verbiegen und " +
+                    "Übertreibungen, Fantasienamen und Blödsinn einbauen – die Erklärung ist ausdrücklich " +
+                    "als ERFOUNDENE Geschichte gemeint. Wichtig: Das Objekt heißt bei seinem echten Namen " +
+                    "(Feld title) und das Feld category bleibt korrekt, und die Sicherheitshinweise " +
+                    "bleiben vollständig ernst und sachlich korrekt – dort wird NIEMALS etwas erfunden. " +
+                    "Streue zwischendurch ein, zwei echte Fakten über das Objekt ein.\n"
+            )
             else -> sb.append("Ton: sachlich und freundlich.\n")
         }
         if (profile.custom.isNotBlank()) {
@@ -394,10 +405,9 @@ object OnlineAnalyzer {
         val facts = mutableListOf<String>()
         val factsArray = o.optJSONArray("facts") ?: JSONArray()
         for (i in 0 until factsArray.length()) facts.add(factsArray.optString(i))
-        // Weiterführende Links aus dem VOLLSTÄNDIGEN Analyseergebnis bauen
-        // (Kernthema + Schlüsselwörter aus den Erklärtexten, direkter
-        // Wikipedia-Artikel); benötigt einen Netzwerkzugriff, parse() läuft
-        // daher nur auf dem IO-Dispatcher.
+        // Weiterführende Links werden exakt aus dem erkannten Objekt (Titel) gebaut –
+        // so suchen die Links genau nach dem Objekt auf dem Foto; benötigt einen
+        // Netzwerkzugriff, parse() läuft daher nur auf dem IO-Dispatcher.
         val base = Explanation(
             title = title,
             category = o.optString("category", ""),
@@ -414,6 +424,7 @@ object OnlineAnalyzer {
         return base.copy(links = KnowledgeBase.buildPublicLinks(base))
     }
 }
+
 
 
 

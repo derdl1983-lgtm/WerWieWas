@@ -120,14 +120,13 @@ object KnowledgeBase {
         }
     }
 
-    /** Baut die Weiterbildungslinks aus dem vollständigen Analyseergebnis. */
+    /**
+     * Baut die Weiterbildungslinks aus dem vollständigen Analyseergebnis.
+     * Alle Suchen richten sich exakt nach dem auf dem Foto erkannten Objekt (Titel der Analyse),
+     * damit die Treffer wirklich zum Objekt passen – ohne Streuung über allgemeine Schlüsselwörter.
+     */
     private fun buildLinks(e: Explanation): List<InfoLink> {
         val subject = subjectFromTitle(e.title)
-        val subjectWords = subject.lowercase().split(Regex("[^a-zäöüß]+")).filter { it.isNotBlank() }.toSet()
-        // Schlüsselwörter aus den Erklärtexten (ohne die Wörter des Themas selbst)
-        val keyword = keywordsOf(e.summary, e.howItWorks, e.usage, e.facts.joinToString(" "))
-            .firstOrNull { it !in subjectWords }
-        val webQuery = if (keyword != null) subject + " " + keyword else subject
         val youtubeQuery = subject + " einfach erklärt"
 
         val links = mutableListOf<InfoLink>()
@@ -147,8 +146,10 @@ object KnowledgeBase {
         }
 
         links.add(InfoLink("YouTube-Suche: " + youtubeQuery, "https://www.youtube.com/results?search_query=" + URLEncoder.encode(youtubeQuery, "UTF-8"), "youtube-search"))
-        links.add(InfoLink("Websuche: " + webQuery, "https://duckduckgo.com/?q=" + URLEncoder.encode(webQuery, "UTF-8"), "web"))
+        // Websuche: exakte Suche nach dem erkannten Objekt (Phrase in Anführungszeichen)
+        links.add(InfoLink("Websuche: " + subject, "https://duckduckgo.com/?q=" + URLEncoder.encode("\"" + subject + "\"", "UTF-8"), "web"))
         links.add(InfoLink("Amazon-Suche: " + subject, "https://www.amazon.de/s?k=" + URLEncoder.encode(subject, "UTF-8"), "amazon-search"))
         return links
     }
 }
+
