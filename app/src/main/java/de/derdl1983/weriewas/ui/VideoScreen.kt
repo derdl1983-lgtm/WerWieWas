@@ -1,6 +1,7 @@
 package de.derdl1983.weriewas.ui
 
 import android.content.Context
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -62,11 +63,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import de.derdl1983.weriewas.data.Discovery
 import de.derdl1983.weriewas.data.DiscoveryStore
+import de.derdl1983.weriewas.util.EdgeTTS
 import de.derdl1983.weriewas.util.Images
 import de.derdl1983.weriewas.util.VideoExporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 
 /** Eine Textkarte des Erklärvideos mit passendem Themenbild-Zeichen. */
@@ -84,6 +87,10 @@ private val slidePalettes = listOf(
     SlidePalette(Color(0xFFBF360C), Color(0xFFD84315)),
     SlidePalette(Color(0xFF37474F), Color(0xFF455A64))
 )
+
+/** Wandelt die Geschwindigkeit (0.75x-2x) in eine Edge-TTS-Prozentangabe um. */
+private fun ratePercent(speed: Float): Int =
+    ((speed - 1f) * 100f).toInt().coerceIn(-50, 100)
 
 /** Baut die Seiten des Erklärvideos aus einer Entdeckung. */
 private fun buildSlides(d: Discovery): List<Slide> = listOf(
@@ -108,7 +115,7 @@ private fun buildSlides(d: Discovery): List<Slide> = listOf(
     )
 )
 
-/** Erklärvideo: Foto, Themenbilder und Textkarten mit mehreren Stimmen, einstellbarer Geschwindigkeit und MP4-Download. */
+/** Erklärvideo: Foto, Themenbilder und Textkarten mit mehreren Stimmen (System oder Edge-TTS), Geschwindigkeit und MP4-Download. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VideoScreen(
@@ -140,6 +147,11 @@ fun VideoScreen(
         mapOf(0.75f to "0,75x", 1f to "1x", 1.25f to "1,25x", 1.5f to "1,5x", 2f to "2x")
     }
 
+    // Gratis Online-Stimmen (Edge-TTS) aus den Einstellungen
+    val edgeA = remember { prefs.getString("edge_voice_a", "") ?: "" }
+    val edgeB = remember { prefs.getString("edge_voice_b", "") ?: "" }
+    val useEdge = edgeA.isNotBlank() || edgeB.isNotBlank()
+
     var page by remember { mutableIntStateOf(0) }
     var playing by remember { mutableStateOf(true) }
     var ttsReady by remember { mutableStateOf(false) }
@@ -151,6 +163,9 @@ fun VideoScreen(
     var exporting by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableStateOf("") }
     var exportMessage by remember { mutableStateOf<String?>(null) }
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var edgeLoading by remember { mutableStateOf(false) }
+    var edgeError by remember { mutableStateOf<String?>(null) }
 
     fun speakCurrent(engine: TextToSpeech) {
         val slide = slides[page]
@@ -236,13 +251,68 @@ fun VideoScreen(
         }
     }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            player?.release()
+            player = null
+        }
+    }
+
     LaunchedEffect(ttsReady, playing, page, speed, dualVoices) {
         val engine = tts
         if (engine == null || !ttsReady) return@LaunchedEffect
+        if (useEdge) return@LaunchedEffect
         if (playing) {
             speakCurrent(engine)
         } else {
             engine.stop()
+        }
+    }
+
+    // Wiedergabe über gratis Edge-TTS-Online-Stimmen
+    LaunchedEffect(useEdge, playing, page, speed) {
+        if (!useEdge) return@LaunchedEffect
+        val old = player
+        old?.stop()
+        old?.release()
+        player = null
+        if (!playing) return@LaunchedEffect
+        val slide = slides[page]
+        val voice = if (page % 2 == 1) {
+            if (edgeB.isNotBlank()) edgeB else edgeA
+        } else {
+            if (edgeA.isNotBlank()) edgeA else edgeB
+        }
+        val rp = ratePercent(speed)
+        edgeLoading = true
+        edgeError = null
+        try {
+            val mp3 = withContext(Dispatchers.IO) {
+                val f = File(context.cacheDir, "www_edge_" + page + "_" + rp + ".mp3")
+                if (!f.exists() || f.length() < 200L) {
+                    EdgeTTS.synthesizeToMp3(slide.title + ". " + slide.text, voice, rp, f)
+                }
+                f
+            }
+            if (playing) {
+                val p = MediaPlayer()
+                p.setDataSource(mp3.absolutePath)
+                p.prepare()
+                p.setOnCompletionListener {
+                    if (playing && page < slides.size - 1) {
+                        page += 1
+                    } else {
+                        playing = false
+                    }
+                }
+                player = p
+                p.start()
+            }
+        } catch (e: Exception) {
+            edgeError = "Online-Stimme nicht erreichbar: " + (e.message ?: "unbekannter Fehler")
+            playing = false
+        } finally {
+            edgeLoading = false
         }
     }
 
@@ -267,7 +337,7 @@ fun VideoScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            if (!ttsReady) {
+            if (!ttsReady && !useEdge) {
                 CircularProgressIndicator()
                 Spacer(Modifier.height(16.dp))
                 Text(
@@ -358,6 +428,25 @@ fun VideoScreen(
             }
             Spacer(Modifier.height(12.dp))
 
+            if (edgeLoading) {
+                Text(
+                    "Online-Stimme wird geladen …",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+            val edgeErrMsg = edgeError
+            if (edgeErrMsg != null) {
+                Text(
+                    edgeErrMsg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -386,29 +475,41 @@ fun VideoScreen(
             }
             Spacer(Modifier.height(16.dp))
 
-            OutlinedButton(
-                onClick = {
-                    dualVoices = !dualVoices
-                },
-                colors = if (dualVoices) {
-                    ButtonDefaults.outlinedButtonColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    )
-                } else {
-                    ButtonDefaults.outlinedButtonColors()
+            if (useEdge) {
+                Text(
+                    text = "Online-Stimmen aktiv (Edge-TTS, gratis, ohne API-Schlüssel): Moderator " +
+                        EdgeTTS.labelFor(if (edgeA.isNotBlank()) edgeA else edgeB) +
+                        ", Erklärbär " + EdgeTTS.labelFor(if (edgeB.isNotBlank()) edgeB else edgeA) +
+                        ". Benötigt Internet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            } else {
+                OutlinedButton(
+                    onClick = {
+                        dualVoices = !dualVoices
+                    },
+                    colors = if (dualVoices) {
+                        ButtonDefaults.outlinedButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    } else {
+                        ButtonDefaults.outlinedButtonColors()
+                    }
+                ) {
+                    Text(if (dualVoices) "Zwei Stimmen: abwechselnd" else "Zwei Stimmen: aus")
                 }
-            ) {
-                Text(if (dualVoices) "Zwei Stimmen: abwechselnd" else "Zwei Stimmen: aus")
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Moderator und Erklärbär wechseln sich pro Szene ab. " +
+                        "Die Stimmen kannst du in den Einstellungen wählen." +
+                        (if (voiceB == null) " Auf diesem Gerät ist nur eine deutsche Stimme installiert – die zweite wird dann über die Tonhöhe simuliert." else ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
             }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Moderator und Erklärbär wechseln sich pro Szene ab. " +
-                    "Die Stimmen kannst du in den Einstellungen wählen." +
-                    (if (voiceB == null) " Auf diesem Gerät ist nur eine deutsche Stimme installiert – die zweite wird dann über die Tonhöhe simuliert." else ""),
-                style = MaterialTheme.typography.bodySmall,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-            )
             Spacer(Modifier.height(16.dp))
 
             Text(
@@ -456,12 +557,40 @@ fun VideoScreen(
                                             if (it.showPhoto) discovery.imagePath else null
                                         )
                                     }
+                                    val audioFiles: List<File?>? = if (useEdge) {
+                                        val vA = if (edgeA.isNotBlank()) edgeA else edgeB
+                                        val vB = if (edgeB.isNotBlank()) edgeB else edgeA
+                                        val rp = ratePercent(speed)
+                                        slides.mapIndexed { i, s ->
+                                            try {
+                                                val mp3 = File(context.cacheDir, "www_exp_" + i + "_" + rp + ".mp3")
+                                                val wav = File(context.cacheDir, "www_exp_" + i + "_" + rp + ".wav")
+                                                if (!mp3.exists() || mp3.length() < 200L) {
+                                                    EdgeTTS.synthesizeToMp3(
+                                                        s.title + ". " + s.text,
+                                                        if (i % 2 == 1) vB else vA,
+                                                        rp,
+                                                        mp3
+                                                    )
+                                                }
+                                                if (!wav.exists() || wav.lastModified() < mp3.lastModified()) {
+                                                    EdgeTTS.mp3ToWav(mp3, wav)
+                                                }
+                                                wav
+                                            } catch (e: Exception) {
+                                                null
+                                            }
+                                        }
+                                    } else {
+                                        null
+                                    }
                                     VideoExporter.export(
                                         context,
                                         data,
                                         voiceA,
                                         voiceB,
-                                        speed
+                                        speed,
+                                        audioFiles
                                     ) { d, t -> exportProgress = "Schritt " + d + " von " + t }
                                 } catch (e: Exception) {
                                     "Export fehlgeschlagen: " + (e.message ?: "unbekannter Fehler")
