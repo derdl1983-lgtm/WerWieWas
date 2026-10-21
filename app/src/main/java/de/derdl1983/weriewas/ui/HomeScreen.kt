@@ -43,9 +43,11 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import de.derdl1983.weriewas.data.DiscoveryStore
 
 /**
  * Startseite der App mit großem Kamera-Schnellstart, Galerie-, Verlauf- und
@@ -75,6 +77,10 @@ fun HomeScreen(
             onGallery()
         }
     }
+
+    // Mini-Statistik der bisherigen Entdeckungen
+    val context = LocalContext.current
+    val stats = remember { DiscoveryStore.loadAll(context) }
 
     // Tipp-Feedback für den großen Kamera-Button
     val interaction = remember { MutableInteractionSource() }
@@ -203,6 +209,51 @@ fun HomeScreen(
                     onClick = onSettings,
                     modifier = Modifier.weight(1f)
                 )
+            }
+
+            // Mini-Statistik: Anzahl Entdeckungen + Top-Kategorien
+            if (stats.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                val topCategories = stats
+                    .map { it.explanation.category }
+                    .filter { it.isNotBlank() }
+                    .groupingBy { it }
+                    .eachCount()
+                    .entries
+                    .sortedByDescending { it.value }
+                    .take(3)
+                    .joinToString(", ") { "${it.key} (${it.value})" }
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            "Deine Entdeckungen",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            "${stats.size} analysierte Objekte",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                        if (topCategories.isNotBlank()) {
+                            Text(
+                                "Top-Kategorien: $topCategories",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                }
             }
             Spacer(Modifier.height(28.dp))
             Text(

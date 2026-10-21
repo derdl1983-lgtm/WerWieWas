@@ -2,6 +2,7 @@ package de.derdl1983.weriewas.ml
 
 import android.content.Context
 import android.util.Base64
+import de.derdl1983.weriewas.data.Discovery
 import de.derdl1983.weriewas.data.Explanation
 import de.derdl1983.weriewas.data.KnowledgeBase
 import kotlinx.coroutines.Dispatchers
@@ -228,32 +229,78 @@ object OnlineAnalyzer {
             parse(content)
         }
 
-    /** Mistral und alle OpenAI-kompatiblen APIs (chat/completions, Bild als Data-URL). */
-    private fun requestChatCompletions(config: ProviderConfig, dataUrl: String): String {
-        val textPart = JSONObject().put("type", "text").put("text", promptFor(config))
-        val imagePart = JSONObject().put("type", "image_url").put("image_url", dataUrl)
-        val contentParts = JSONArray().put(textPart).put(imagePart)
-        val message = JSONObject().put("role", "user").put("content", contentParts)
-        val messages = JSONArray().put(message)
+    /**
+     * Rückfrage-Chat: Beantwortet eine Frage des Nutzers zur bereits erkannten
+     * Entdeckung. Nutzt denselben Anbieter und API-Schlüssel wie die Foto-Analyse;
+     * das Foto wird dabei NICHT erneut versendet – die bestehende Erklärung dient
+     * als Kontext. `history` enthält bisherige Frage-Antwort-Paare, damit ein
+     * echter Dialog mit Folgeverständnis entsteht.
+     */
+    suspend fun followUp(
+        context: Context,
+        d: Discovery,
+        question: String,
+        history: List<Pair<String, String>> = emptyList()
+    ): String = withContext(Dispatchers.IO) {
+        val config = loadConfig(context)
+            ?: throw IllegalStateException(
+                "Kein API-Schlüssel hinterlegt – stelle zuerst einen Anbieter in den Einstellungen ein."
+            )
+        val e = d.explanation
+        val sb = StringBuilder()
+        sb.append("Du bist der Erklärassistent der App „Wer Wie Was“. Der Nutzer hat ein Foto gemacht; die App hat folgendes Objekt erkannt.\n")
+        sb.append("Erkanntes Objekt: ").append(e.title)
+        if (e.category.isNotBlank()) sb.append(" (Kategorie: ").append(e.category).append(")")
+        sb.append("\n\nBereits bekannte Analyse:\n")
+        sb.append("Kurzbeschreibung: ").append(e.summary).append("\n")
+        if (e.howItWorks.isNotBlank()) sb.append("Funktionsweise: ").append(e.howItWorks).append("\n")
+        if (e.usage.isNotBlank()) sb.append("Verwendung: ").append(e.usage).append("\n")
+        if (e.practical.isNotBlank()) sb.append("Praktische Tipps: ").append(e.practical).append("\n")
+        if (e.facts.isNotEmpty()) sb.append("Fakten: ").append(e.facts.joinToString("; ")).append("\n")
+        if (e.safety.isNotBlank()) sb.append("Sicherheit: ").append(e.safety).append("\n")
+        if (e.uncertain) sb.append("Hinweis: Die Erkennung des Objekts war unsicher.\n")
+        sb.append("\nBeantworte jetzt die Rückfrage des Nutzers kurz, klar und auf Deutsch (maximal etwa 120 Wörter). ")
+        sb.append("Beziehe dich auf das erkannte Objekt und den bisherigen Analyse-Kontext. ")
+        sb.append("Wenn eine Frage nichts mit dem Objekt zu tun hat, weise freundlich darauf hin. ")
+        sb.append("Sicherheitsrelevante Warnungen (z. B. bei Lebensmitteln, Pilzen, Chemikalien) bleiben ernst.\n")
+        sb.append(config.profilePrompt)
+        val system = sb.toString()
+        when (config.provider) {
+            "gemini" -> followUpGemini(config, system, question, history)
+            "anthropic" -> followUpAnthropic(config, system, question, history)
+            else -> followUpChatCompletions(config, system, question, history)
+        }
+    }
+
+    /** Rückfrage über chat/completions (Mistral, OpenAI-kompatibel, OpenRouter, Grok). */
+    private fun followUpChatCompletions(
+        config: ProviderConfig,
+        system: String,
+        question: String,
+        history: List<Pair<String, String>>
+    ): String {
+        val messages = JSONArray()
+        messages.put(JSONObject().put("role", "system").put("content", system))
+        for ((q, a) in history) {
+            messages.put(JSONObject().put("role", "user").put("content", q))
+            messages.put(JSONObject().put("role", "assistant").put("content", a))
+        }
+        messages.put(JSONObject().put("role", "user").put("content", question))
         val body = JSONObject()
             .put("model", config.model)
             .put("messages", messages)
         if (config.provider == "openai") {
-            // Aktuelle GPT-Modelle: max_completion_tokens statt max_tokens,
-            // niedrige Temperature wird nicht mehr unterstützt.
-            body.put("max_completion_tokens", 2000)
+            body.put("max_completion_tokens", 800)
         } else {
-            body.put("temperature", 0.2)
-            body.put("max_tokens", 2000)
+            body.put("temperature", 0.3)
+            body.put("max_tokens", 800)
         }
         val conn = openPost(config.baseUrl + "/chat/completions", config.apiKey)
         val text = sendAndRead(conn, body.toString())
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
-            throw IllegalStateException(
-                "KI-API-Fehler: " + (err?.optString("message") ?: err.toString())
-            )
+            throw IllegalStateException("KI-API-Fehler: " + (err?.optString("message") ?: err.toString()))
         }
         return o.getJSONArray("choices")
             .getJSONObject(0)
@@ -261,56 +308,76 @@ object OnlineAnalyzer {
             .getString("content")
     }
 
-    /** Google Gemini (generateContent, Bild als inline_data). */
-    private fun requestGemini(config: ProviderConfig, dataUrl: String): String {
-        val base64 = dataUrl.substringAfter("base64,")
-        val textPart = JSONObject().put("text", promptFor(config))
-        val inlineData = JSONObject().put("mime_type", "image/jpeg").put("data", base64)
-        val imagePart = JSONObject().put("inline_data", inlineData)
-        val parts = JSONArray().put(textPart).put(imagePart)
-        val content = JSONObject().put("parts", parts)
-        val contents = JSONArray().put(content)
-        val generationConfig = JSONObject().put("temperature", 0.2)
+    /** Rückfrage über Google Gemini (generateContent, rein textbasiert). */
+    private fun followUpGemini(
+        config: ProviderConfig,
+        system: String,
+        question: String,
+        history: List<Pair<String, String>>
+    ): String {
+        val contents = JSONArray()
+        for ((q, a) in history) {
+            contents.put(
+                JSONObject().put("role", "user")
+                    .put("parts", JSONArray().put(JSONObject().put("text", q)))
+            )
+            contents.put(
+                JSONObject().put("role", "model")
+                    .put("parts", JSONArray().put(JSONObject().put("text", a)))
+            )
+        }
+        contents.put(
+            JSONObject().put("role", "user")
+                .put("parts", JSONArray().put(JSONObject().put("text", question)))
+        )
         val body = JSONObject()
             .put("contents", contents)
-            .put("generationConfig", generationConfig)
+            .put(
+                "systemInstruction",
+                JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system)))
+            )
+            .put(
+                "generationConfig",
+                JSONObject().put("temperature", 0.3).put("maxOutputTokens", 800)
+            )
         val url = config.baseUrl + "/models/" + config.model + ":generateContent?key=" + config.apiKey
         val conn = openPost(url, "")
         val text = sendAndRead(conn, body.toString())
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
-            throw IllegalStateException(
-                "Gemini-Fehler: " + (err?.optString("message") ?: err.toString())
-            )
+            throw IllegalStateException("Gemini-Fehler: " + (err?.optString("message") ?: err.toString()))
         }
-        val candidates = o.getJSONArray("candidates")
-        val responseParts = candidates.getJSONObject(0)
+        val parts = o.getJSONArray("candidates")
+            .getJSONObject(0)
             .getJSONObject("content")
             .getJSONArray("parts")
         val sb = StringBuilder()
-        for (i in 0 until responseParts.length()) {
-            sb.append(responseParts.getJSONObject(i).optString("text"))
+        for (i in 0 until parts.length()) {
+            sb.append(parts.getJSONObject(i).optString("text"))
         }
         return sb.toString()
     }
 
-    /** Anthropic Claude (Messages API, Bild als Base64-Quelle). */
-    private fun requestAnthropic(config: ProviderConfig, dataUrl: String): String {
-        val base64 = dataUrl.substringAfter("base64,")
-        val textPart = JSONObject().put("type", "text").put("text", promptFor(config))
-        val source = JSONObject()
-            .put("type", "base64")
-            .put("media_type", "image/jpeg")
-            .put("data", base64)
-        val imagePart = JSONObject().put("type", "image").put("source", source)
-        val contentParts = JSONArray().put(textPart).put(imagePart)
-        val message = JSONObject().put("role", "user").put("content", contentParts)
+    /** Rückfrage über die Anthropic Messages API (rein textbasiert). */
+    private fun followUpAnthropic(
+        config: ProviderConfig,
+        system: String,
+        question: String,
+        history: List<Pair<String, String>>
+    ): String {
+        val messages = JSONArray()
+        for ((q, a) in history) {
+            messages.put(JSONObject().put("role", "user").put("content", q))
+            messages.put(JSONObject().put("role", "assistant").put("content", a))
+        }
+        messages.put(JSONObject().put("role", "user").put("content", question))
         val body = JSONObject()
             .put("model", config.model)
-            .put("max_tokens", 2000)
-            .put("temperature", 0.2)
-            .put("messages", JSONArray().put(message))
+            .put("max_tokens", 800)
+            .put("temperature", 0.3)
+            .put("system", system)
+            .put("messages", messages)
         val conn = openPost(
             config.baseUrl + "/messages", "",
             mapOf(
@@ -322,9 +389,7 @@ object OnlineAnalyzer {
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
-            throw IllegalStateException(
-                "Claude-Fehler: " + (err?.optString("message") ?: err.toString())
-            )
+            throw IllegalStateException("Claude-Fehler: " + (err?.optString("message") ?: err.toString()))
         }
         val contentArr = o.getJSONArray("content")
         val sb = StringBuilder()
@@ -333,99 +398,3 @@ object OnlineAnalyzer {
             if (block.optString("type") == "text") sb.append(block.optString("text"))
         }
         return sb.toString()
-    }
-
-    private fun openPost(url: String, bearer: String, extraHeaders: Map<String, String> = emptyMap()): HttpURLConnection =
-        (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            doOutput = true
-            connectTimeout = 30000
-            readTimeout = 90000
-            setRequestProperty("Content-Type", "application/json")
-            if (bearer.isNotBlank()) setRequestProperty("Authorization", "Bearer " + bearer)
-            for ((k, v) in extraHeaders) setRequestProperty(k, v)
-        }
-
-    private fun sendAndRead(conn: HttpURLConnection, body: String): String {
-        try {
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val code = conn.responseCode
-            val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                ?.bufferedReader()?.use { it.readText() } ?: ""
-            if (code !in 200..299) {
-                // Fehlerursache aus der API-Antwort heraussuchen und verständlich melden
-                val reason = extractApiError(text)
-                val hint = when {
-                    code == 401 || code == 403 ->
-                        "Zugriff verweigert (HTTP " + code + "). Prüfe deinen API-Schlüssel."
-                    code == 404 ->
-                        "Adresse oder Modell nicht gefunden (HTTP 404). Prüfe Modellname und Basis-URL."
-                    code == 429 ->
-                        "Anfragelimit erreicht (HTTP 429). Warte kurz und versuche es erneut."
-                    code >= 500 ->
-                        "Der KI-Dienst hat ein Problem (HTTP " + code + "). Versuche es später erneut."
-                    else -> "HTTP-Fehler " + code
-                }
-                throw IllegalStateException(hint + (if (reason.isNotBlank()) " – " + reason else ""))
-            }
-            return text
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    /** Extrahiert eine kurze Fehlermeldung aus einer JSON-Fehlerantwort der API. */
-    private fun extractApiError(text: String): String {
-        if (text.isBlank()) return ""
-        return runCatching {
-            val o = JSONObject(text)
-            val err = o.optJSONObject("error")
-            when {
-                err != null -> err.optString("message", "").take(200)
-                o.has("message") -> o.optString("message", "").take(200)
-                else -> ""
-            }
-        }.getOrDefault("")
-    }
-
-    private fun parse(content: String): Explanation {
-        // Modell-Antwort kann von Markdown-Codezäunen umschlossen sein
-        var cleaned = content.trim()
-        if (cleaned.startsWith("```")) {
-            cleaned = cleaned.removePrefix("```json").removePrefix("```")
-            cleaned = cleaned.removeSuffix("```").trim()
-        }
-        val start = cleaned.indexOf('{')
-        val end = cleaned.lastIndexOf('}')
-        if (start < 0 || end <= start) {
-            throw IllegalStateException("Antwort der Online-Analyse war unlesbar.")
-        }
-        val o = JSONObject(cleaned.substring(start, end + 1))
-        val title = o.optString("title", "Online-Analyse")
-        val facts = mutableListOf<String>()
-        val factsArray = o.optJSONArray("facts") ?: JSONArray()
-        for (i in 0 until factsArray.length()) facts.add(factsArray.optString(i))
-        // Weiterführende Links werden exakt aus dem erkannten Objekt (Titel) gebaut –
-        // so suchen die Links genau nach dem Objekt auf dem Foto; benötigt einen
-        // Netzwerkzugriff, parse() läuft daher nur auf dem IO-Dispatcher.
-        val base = Explanation(
-            title = title,
-            category = o.optString("category", ""),
-            summary = o.optString("summary", ""),
-            howItWorks = o.optString("howItWorks", ""),
-            usage = o.optString("usage", ""),
-            practical = o.optString("practical", ""),
-            facts = facts,
-            safety = o.optString("safety", ""),
-            links = emptyList(),
-            uncertain = o.optBoolean("uncertain", false),
-            source = "online"
-        )
-        return base.copy(links = KnowledgeBase.buildPublicLinks(base))
-    }
-}
-
-
-
-
-

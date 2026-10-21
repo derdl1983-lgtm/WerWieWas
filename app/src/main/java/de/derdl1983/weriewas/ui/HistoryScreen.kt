@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,21 +13,27 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -61,6 +68,21 @@ fun HistoryScreen(
     val context = LocalContext.current
     var list by remember { mutableStateOf(DiscoveryStore.loadAll(context)) }
     var pendingDelete by remember { mutableStateOf<Discovery?>(null) }
+    var search by remember { mutableStateOf("") }
+    var categoryFilter by remember { mutableStateOf<String?>(null) }
+
+    val categories = list.map { it.explanation.category }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .sorted()
+    val filtered = list.filter { entry ->
+        val matchesCategory = categoryFilter == null || entry.explanation.category == categoryFilter
+        val q = search.trim()
+        val matchesSearch = q.isEmpty() ||
+            entry.explanation.title.contains(q, ignoreCase = true) ||
+            entry.explanation.summary.contains(q, ignoreCase = true)
+        matchesCategory && matchesSearch
+    }
 
     Scaffold(
         topBar = {
@@ -92,19 +114,83 @@ fun HistoryScreen(
                 )
             }
         } else {
-            LazyColumn(
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(padding)
             ) {
-                items(list, key = { it.id }) { entry ->
-                    HistoryItem(
-                        entry = entry,
-                        onClick = { onOpen(entry.id) },
-                        onDelete = { pendingDelete = entry }
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    placeholder = { Text("Titel oder Beschreibung suchen") },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    singleLine = true
+                )
+                if (categories.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { categoryFilter = null },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (categoryFilter == null) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    androidx.compose.ui.graphics.Color.Transparent
+                                }
+                            )
+                        ) { Text("Alle") }
+                        categories.forEach { category ->
+                            OutlinedButton(
+                                onClick = {
+                                    categoryFilter = if (categoryFilter == category) null else category
+                                },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (categoryFilter == category) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        androidx.compose.ui.graphics.Color.Transparent
+                                    }
+                                )
+                            ) { Text(category) }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                if (filtered.isEmpty()) {
+                    Text(
+                        "Keine Treffer",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(filtered, key = { it.id }) { entry ->
+                            HistoryItem(
+                                entry = entry,
+                                onClick = { onOpen(entry.id) },
+                                onDelete = { pendingDelete = entry }
+                            )
+                        }
+                    }
                 }
             }
         }
