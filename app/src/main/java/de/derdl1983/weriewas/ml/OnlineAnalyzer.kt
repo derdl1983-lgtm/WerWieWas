@@ -234,7 +234,11 @@ object OnlineAnalyzer {
             "Schreibe alle Inhalte auf " + languageName(config.language) +
                 " – auch den Namen des Objekts (title) in dieser Sprache.\n"
         }
-        return PROMPT + config.profilePrompt + lang
+        // Abschluss-Erinnerung: Das lange Profil kann das Modell dazu verleiten,
+        // frei zu antworten – deshalb noch einmal das JSON-Format einfordern.
+        val jsonReminder =
+            "Antworte ausschließlich mit dem JSON-Objekt – kein Erklärtext davor oder danach, kein Markdown.\n"
+        return PROMPT + config.profilePrompt + lang + jsonReminder
     }
 
     /** Führt die Online-Analyse für ein einzelnes Foto mit dem gewählten Anbieter aus. */

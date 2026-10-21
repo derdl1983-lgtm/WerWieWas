@@ -53,6 +53,7 @@ import de.derdl1983.weriewas.data.PendingStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import de.derdl1983.weriewas.util.Images
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -163,7 +164,9 @@ fun AnalyzeScreen(
     /** Legt die Fotos in die Warteschlange, wenn die Analyse (z. B. ohne Netz) fehlgeschlagen ist. */
     fun saveForLater() {
         scope.launch {
-            withContext(Dispatchers.IO) {
+            withContext(Dispatchers.IO + NonCancellable) {
+                // NonCancellable: Das Foto wird garantiert in der Warteschlange
+                // gespeichert, auch wenn der Nutzer den Bildschirm sofort verlässt.
                 PendingStore.add(context, listOf(imagePath) + extraPaths)
             }
             Toast.makeText(

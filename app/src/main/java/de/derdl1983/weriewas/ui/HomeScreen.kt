@@ -59,7 +59,9 @@ import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.data.LabelConfidence
 import de.derdl1983.weriewas.data.PendingStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -137,13 +139,23 @@ fun HomeScreen(
                     }
                     doneCount++
                 }
+            } catch (e: CancellationException) {
+                // Bildschirm wurde während der Analyse verlassen – sauber beenden,
+                // damit das Abbrechen nicht wie ein Fehler behandelt wird.
+                throw e
             } catch (e: Exception) {
                 // Netz bleibt weg oder API-Fehler: Der Rest bleibt in der Warteschlange
                 queueMessage = "Nachsenden abgebrochen: " + (e.message ?: "unbekannter Fehler")
             } finally {
                 queueRunning = false
-                pending = withContext(Dispatchers.IO) { PendingStore.loadAll(context) }
-                stats = DiscoveryStore.loadAll(context)
+                // NonCancellable: Der Zustand wird auch dann sicher aktualisiert, wenn
+                // der Nutzer den Bildschirm während der Analyse verlässt. Ein normales
+                // withContext würde in einer bereits abgebrochenen Coroutine mit einer
+                // unbehandelten Ausnahme die komplette App zum Absturz bringen.
+                withContext(Dispatchers.IO + NonCancellable) {
+                    pending = PendingStore.loadAll(context)
+                    stats = DiscoveryStore.loadAll(context)
+                }
                 if (doneCount > 0) {
                     queueMessage = "$doneCount gemerkte Fotos erfolgreich analysiert."
                 }
