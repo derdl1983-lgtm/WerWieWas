@@ -15,46 +15,31 @@ Daemon will be stopped at the end of the build
 > Task :app:parseDebugLocalResources
 > Task :app:processDebugMainManifest
 > Task :app:processDebugManifest
+> Task :app:processDebugManifestForPackage
 > Task :app:javaPreCompileDebug
 > Task :app:mergeDebugShaders
 > Task :app:compileDebugShaders NO-SOURCE
 > Task :app:generateDebugAssets UP-TO-DATE
 > Task :app:mergeDebugAssets
-> Task :app:desugarDebugFileDependencies
 > Task :app:compressDebugAssets
+> Task :app:desugarDebugFileDependencies
 > Task :app:mergeDebugStartupProfile
 > Task :app:mergeDebugJniLibFolders
+> Task :app:mergeDebugNativeLibs NO-SOURCE
 > Task :app:checkDebugDuplicateClasses
-> Task :app:processDebugManifestForPackage
-> Task :app:mergeDebugNativeLibs
-> Task :app:mergeLibDexDebug
+> Task :app:stripDebugDebugSymbols NO-SOURCE
+> Task :app:processDebugResources
 > Task :app:validateSigningDebug
+> Task :app:mergeLibDexDebug
 > Task :app:writeDebugAppMetadata
 > Task :app:writeDebugSigningConfigVersions
-
-> Task :app:stripDebugDebugSymbols
-Unable to strip the following libraries, packaging them as they are: libmlkitcommonpipeline.so.
-
-> Task :app:processDebugResources
 > Task :app:mergeExtDexDebug
 
 > Task :app:compileDebugKotlin FAILED
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:6:16 Unresolved reference 'ByteString'.
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:128:17 'onMessage' overrides nothing.
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:128:69 Unresolved reference 'ByteString'.
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:129:38 Overload resolution ambiguity between candidates:
-fun Array<out Byte>.toByteArray(): ByteArray
-fun Collection<Byte>.toByteArray(): ByteArray
-fun UByteArray.toByteArray(): ByteArray
-fun String.toByteArray(charset: Charset = ...): ByteArray
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:130:30 Unresolved reference 'size'.
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:131:39 Cannot infer type for this parameter. Please specify it explicitly.
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:131:39 Not enough information to infer type argument for 'V'.
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:131:76 Cannot infer type for this parameter. Please specify it explicitly.
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:131:76 Not enough information to infer type argument for 'V'.
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:133:30 Unresolved reference 'size'.
-e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/util/EdgeTTS.kt:134:60 Unresolved reference 'size'.
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/buildapk-1792541538697.json
+e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/data/KnowledgeBase.kt:82:25 Argument type mismatch: actual type is 'java.util.Comparator<kotlin.Pair<kotlin.String, kotlin.Pair<kotlin.Int, kotlin.Int>>>', but 'java.util.Comparator<in T>' was expected.
+e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/data/KnowledgeBase.kt:82:80 Unresolved reference 'value'.
+e: file:///home/runner/work/WerWieWas/WerWieWas/app/src/main/java/de/derdl1983/weriewas/data/KnowledgeBase.kt:82:116 Unresolved reference 'value'.
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/buildapk-1792559719969.json
 
 FAILURE: Build failed with an exception.
 
@@ -263,5 +248,5 @@ Caused by: org.jetbrains.kotlin.gradle.tasks.CompilationErrorException: Compilat
 	... 2 more
 
 
-BUILD FAILED in 34s
-29 actionable tasks: 29 executed
+BUILD FAILED in 30s
+27 actionable tasks: 27 executed
