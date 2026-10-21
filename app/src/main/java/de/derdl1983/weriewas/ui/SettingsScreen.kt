@@ -2,6 +2,7 @@ package de.derdl1983.weriewas.ui
 
 import android.content.Context
 import android.content.Intent
+import android.media.MediaPlayer
 import android.net.Uri
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
@@ -38,6 +39,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -47,6 +49,11 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
+import de.derdl1983.weriewas.util.EdgeTTS
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /** Auswahlliste einer Profil-Eigenschaft (aktuelle Wahl ist hervorgehoben). */
 @Composable
@@ -75,11 +82,12 @@ private fun ProfileChoice(
     }
 }
 
-/** Einstellungen: Stimmen, KI-Profil & Antwortstil, wählbarer KI-Anbieter mit API-Schlüssel, Daten verwalten, Datenschutz. */
+/** Einstellungen: Stimmen (System + Edge-TTS), KI-Profil & Antwortstil, KI-Anbieter, Daten verwalten, Datenschutz. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onClose: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
     var provider by rememberSaveable { mutableStateOf(OnlineAnalyzer.currentProvider(context)) }
     var model by rememberSaveable { mutableStateOf(prefs.getString("ai_model", "") ?: "") }
@@ -121,6 +129,15 @@ fun SettingsScreen(onClose: () -> Unit) {
     var pickA by remember { mutableStateOf(false) }
     var pickB by remember { mutableStateOf(false) }
 
+    // Gratis Online-Stimmen (Edge-TTS)
+    var edgeVoiceA by rememberSaveable { mutableStateOf(prefs.getString("edge_voice_a", "") ?: "") }
+    var edgeVoiceB by rememberSaveable { mutableStateOf(prefs.getString("edge_voice_b", "") ?: "") }
+    var pickEdgeA by remember { mutableStateOf(false) }
+    var pickEdgeB by remember { mutableStateOf(false) }
+    var testing by remember { mutableStateOf(false) }
+    var edgeTestMessage by remember { mutableStateOf<String?>(null) }
+    var testPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+
     DisposableEffect(Unit) {
         var engine: TextToSpeech? = null
         engine = TextToSpeech(context) { status ->
@@ -142,6 +159,13 @@ fun SettingsScreen(onClose: () -> Unit) {
         }
     }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            testPlayer?.release()
+            testPlayer = null
+        }
+    }
+
     fun displayName(name: String): String {
         val v = germanVoices.firstOrNull { it.name == name }
         return v?.name?.replace("de-de-x-", "")?.replace("#", " ")?.ifBlank { name } ?: name
@@ -155,6 +179,67 @@ fun SettingsScreen(onClose: () -> Unit) {
     fun selectVoiceB(name: String) {
         voiceBName = name
         prefs.edit().putString("tts_voice_b", name).apply()
+    }
+
+    fun selectEdgeA(id: String) {
+        edgeVoiceA = id
+        prefs.edit().putString("edge_voice_a", id).apply()
+    }
+
+    fun selectEdgeB(id: String) {
+        edgeVoiceB = id
+        prefs.edit().putString("edge_voice_b", id).apply()
+    }
+
+    fun openTtsSettings() {
+        runCatching {
+            context.startActivity(
+                Intent("com.android.settings.TTS_SETTINGS").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }.onFailure {
+            Toast.makeText(
+                context,
+                "Sprachausgabe-Einstellungen konnten nicht geöffnet werden.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    fun testEdge() {
+        val voice = if (edgeVoiceA.isNotBlank()) edgeVoiceA else edgeVoiceB
+        if (voice.isBlank()) {
+            edgeTestMessage = "Wähle zuerst eine Online-Stimme aus."
+            return
+        }
+        testing = true
+        edgeTestMessage = null
+        scope.launch(Dispatchers.IO) {
+            try {
+                val f = File(context.cacheDir, "www_edge_test.mp3")
+                f.delete()
+                EdgeTTS.synthesizeToMp3(
+                    "Hallo! Ich bin eine kostenlose Online-Stimme für dein Erklärvideo.",
+                    voice,
+                    0,
+                    f
+                )
+                withContext(Dispatchers.Main) {
+                    testPlayer?.release()
+                    val p = MediaPlayer()
+                    p.setDataSource(f.absolutePath)
+                    p.prepare()
+                    p.start()
+                    testPlayer = p
+                    edgeTestMessage = "Test läuft: " + EdgeTTS.labelFor(voice)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    edgeTestMessage = "Test fehlgeschlagen: " + (e.message ?: "unbekannter Fehler")
+                }
+            } finally {
+                withContext(Dispatchers.Main) { testing = false }
+            }
+        }
     }
 
     Scaffold(
@@ -177,14 +262,14 @@ fun SettingsScreen(onClose: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // ---------- Stimmen fürs Erklärvideo ----------
+            // ---------- Stimmen fürs Erklärvideo (System) ----------
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        "Stimmen fürs Erklärvideo",
+                        "Stimmen fürs Erklärvideo (offline)",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -214,11 +299,73 @@ fun SettingsScreen(onClose: () -> Unit) {
                             onClick = { pickB = true },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("Erklärbär: " + if (voiceBName.isBlank()) "(Standard)" else displayName(voiceBName)) }
+                    }
+                    Text(
+                        "Kostenlose Zusatzstimmen offline: Installiere die App „RHVoice“ (F-Droid, gratis, " +
+                            "funktioniert ohne Internet) oder lade in den Google-Sprachausgabe-Einstellungen " +
+                            "deutsche Sprachpakete. Nach dem Setzen als Standard-Engine erscheinen die Stimmen " +
+                            "hier automatisch in der Auswahl.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                    OutlinedButton(
+                        onClick = { openTtsSettings() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Android-Sprachausgabe öffnen") }
+                }
+            }
+
+            // ---------- Gratis KI-Stimmen (Edge-TTS, online) ----------
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Gratis KI-Stimmen (Edge-TTS, online)",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "Sehr natürliche Stimmen von Microsoft Edge – komplett gratis und ohne " +
+                            "API-Schlüssel, benötigt nur Internet. Werden für Wiedergabe und Export " +
+                            "des Erklärvideos bevorzugt, sobald mindestens eine gewählt ist.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedButton(
+                        onClick = { pickEdgeA = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text(
-                            "Tipp: Mehr und bessere Stimmen bekommst du über die Google-App " +
-                                "oder ein Sprachpaket der Einstellungen-App (z. B. „Google Text-to-Speech“).",
+                            "Moderator (online): " +
+                                if (edgeVoiceA.isBlank()) "(aus)" else EdgeTTS.labelFor(edgeVoiceA)
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { pickEdgeB = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "Erklärbär (online): " +
+                                if (edgeVoiceB.isBlank()) "(aus)" else EdgeTTS.labelFor(edgeVoiceB)
+                        )
+                    }
+                    Text(
+                        "Wähle bei beiden „(aus)“, um nur die offline System-Stimmen zu nutzen.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                    OutlinedButton(
+                        onClick = { testEdge() },
+                        enabled = !testing,
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text(if (testing) "Teste Online-Stimme …" else "Online-Stimme testen") }
+                    val edgeMsg = edgeTestMessage
+                    if (edgeMsg != null) {
+                        Text(
+                            edgeMsg,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
@@ -495,6 +642,8 @@ fun SettingsScreen(onClose: () -> Unit) {
                             "aktiviert hast UND vor jedem einzelnen Foto ausdrücklich zustimmst – " +
                             "dann nur an den von dir gewählten KI-Anbieter. " +
                             "Der API-Schlüssel wird ausschließlich lokal gespeichert.\n\n" +
+                            "Die optionalen Edge-TTS-Stimmen senden den jeweils vorzulesenden Text " +
+                            "an den Microsoft-Lesedienst, um die Sprache zu erzeugen. " +
                             "Es gibt kein Tracking, keine Werbung und keine Konten. " +
                             "Details stehen in der Datei DATENSCHUTZ.md im Projekt-Repository.",
                         style = MaterialTheme.typography.bodyMedium
@@ -545,6 +694,62 @@ fun SettingsScreen(onClose: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = { pickB = false }) { Text("Fertig") }
+            }
+        )
+    }
+
+    if (pickEdgeA) {
+        AlertDialog(
+            onDismissRequest = { pickEdgeA = false },
+            title = { Text("Moderator (Edge-TTS, online)") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        RadioButton(selected = edgeVoiceA.isBlank(), onClick = { selectEdgeA(""); pickEdgeA = false })
+                        TextButton(onClick = { selectEdgeA(""); pickEdgeA = false }) {
+                            Text("(aus – offline System-Stimme)", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    EdgeTTS.GERMAN_VOICES.forEach { v ->
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            RadioButton(selected = v.id == edgeVoiceA, onClick = { selectEdgeA(v.id); pickEdgeA = false })
+                            TextButton(onClick = { selectEdgeA(v.id); pickEdgeA = false }) {
+                                Text(v.label, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { pickEdgeA = false }) { Text("Fertig") }
+            }
+        )
+    }
+
+    if (pickEdgeB) {
+        AlertDialog(
+            onDismissRequest = { pickEdgeB = false },
+            title = { Text("Erklärbär (Edge-TTS, online)") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        RadioButton(selected = edgeVoiceB.isBlank(), onClick = { selectEdgeB(""); pickEdgeB = false })
+                        TextButton(onClick = { selectEdgeB(""); pickEdgeB = false }) {
+                            Text("(aus – offline System-Stimme)", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    EdgeTTS.GERMAN_VOICES.forEach { v ->
+                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            RadioButton(selected = v.id == edgeVoiceB, onClick = { selectEdgeB(v.id); pickEdgeB = false })
+                            TextButton(onClick = { selectEdgeB(v.id); pickEdgeB = false }) {
+                                Text(v.label, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { pickEdgeB = false }) { Text("Fertig") }
             }
         )
     }
