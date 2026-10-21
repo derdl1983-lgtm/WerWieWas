@@ -79,7 +79,7 @@ object KnowledgeBase {
             }
         }
         return counts.entries
-            .sortedWith(compareByDescending<Pair<String, Pair<Int, Int>>> { it.value.first }.thenByDescending { it.value.second })
+            .sortedByDescending { it.value.first * 10 + it.value.second }
             .take(6)
             .map { it.key }
     }
