@@ -1,21 +1,31 @@
 # Kosten
 
-## Grundfunktionen: 0 €
+## Die App selbst: 0 €
 
-- **Bilderkennung:** Google ML Kit läuft lokal auf dem Gerät – kostenlos, offline, ohne Nutzungslimit.
-- Kein Konto, keine Cloud, keine Werbung, keine Abo-Kosten.
-- Die App funktioniert vollständig ohne jegliche Zahlung.
+- Kein Konto bei der App, keine Cloud der App, keine Werbung, keine Abo-Kosten.
+- Der APK-Build über GitHub Actions ist für öffentliche Repositories kostenlos.
 
-## Optional: Mistral-API
+## Foto-Analyse über deinen KI-Schlüssel
 
-- **Ohne API-Schlüssel:** wird nie genutzt, Kosten 0 €.
-- **Mit eigenem Schlüssel:** Kosten richten sich nach deinem Mistral-Tarif; ein einzelner Foto-Analysedurchgang kostet je nach Modell im Bereich von Bruchteilen eines Cents. Aktuelle Preise: `console.mistral.ai` bzw. mistral.ai/pricing (Preise können sich ändern).
-- Genutzt wird die Online-Analyse nur bei unsicheren lokalen Erkennungen und nur nach deiner Bestätigung – du hast die volle Kontrolle über die Anzahl der Aufrufe.
+Die Analyse läuft über den API-Schlüssel deines gewählten Anbieters – Kosten und Abrechnung richten sich nach dessen Tarif:
 
-## GitHub
+| Anbieter | Schlüssel | Kosten-Charakter |
+| --- | --- | --- |
+| Google Gemini | aistudio.google.com/apikey | großzügiges Gratis-Kontingent im AI Studio |
+| Mistral | console.mistral.ai | kleines Gratis-Kontingent, sonst nutzungsbasiert |
+| OpenAI | platform.openai.com/api-keys | nutzungsbasiert |
+| OpenRouter | openrouter.ai/settings/keys | nutzungsbasiert, viele Modelle auch gratis („:free“) |
+| Anthropic Claude | console.anthropic.com | nutzungsbasiert |
+| xAI Grok | console.x.ai | nutzungsbasiert |
 
-- Öffentliche Repositories inklusive GitHub-Actions-Minuten sind kostenlos. Der APK-Build verursacht keine Kosten.
+- Ein einzelner Foto-Analysedurchgang (ein Bild, kurze Antwort) kostet je nach Modell im Bereich von Bruchteilen eines Cents bis wenigen Cents; aktuelle Preise stehen bei den Anbietern.
+- Du hast die volle Kontrolle: Die App ruft die API nur nach deiner Bestätigung pro Foto auf.
+
+## Kostenlose Stimmen fürs Erklärvideo
+
+- Die Online-Stimmen über Edge-TTS sind kostenlos.
+- Alternativ die offline System-Sprachausgabe des Geräts.
 
 ## Fazit
 
-Ohne die optionale Online-Analyse ist und bleibt „Wer Wie Was“ komplett kostenlos – erkennbar daran, dass die App ohne Schlüssel gar keine externen Dienste aufruft.
+Die App selbst kostet nichts; die einzigen möglichen Kosten entstehen durch deinen eigenen KI-API-Schlüssel – und die Anzahl der Aufrufe bestimmst du allein.

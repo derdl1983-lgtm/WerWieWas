@@ -543,11 +543,16 @@ fun SettingsScreen(onClose: () -> Unit) {
                             "openai" -> "Funktioniert mit jedem OpenAI-kompatiblen Dienst " +
                                 "(OpenAI selbst oder ein eigener Server). " +
                                 "Bei einem anderen Dienst dessen API-Basis-URL eintragen."
-                            "openrouter" -> "OpenRouter bündelt viele Modelle (OpenAI, Google, Meta " +
-                                "und weitere) hinter einem einzigen API-Schlüssel – ideal, um " +
+                            "openrouter" -> "OpenRouter bündelt viele Modelle (OpenAI, Google, Meta, " +
+                                "Anthropic, xAI und weitere) hinter einem einzigen API-Schlüssel – ideal, um " +
                                 "verschiedene Modelle auszuprobieren."
                             "gemini" -> "Google Gemini mit eigenem API-Schlüssel aus Google AI Studio. " +
                                 "Das Sprachmodell kannst du unten wählen oder frei eintragen."
+                            "anthropic" -> "Anthropic Claude mit eigenem API-Schlüssel aus der Anthropic Console. " +
+                                "Alle aktuellen Claude-Modelle (Haiku, Sonnet, Opus, Fable) verstehen Bilder."
+                            "xai" -> "Grok von xAI mit eigenem API-Schlüssel aus der xAI Console. " +
+                                "Aktuelle Grok-Modelle verstehen Fotos und werden über eine " +
+                                "OpenAI-kompatible API angesprochen."
                             else -> "Mistral mit Bildverständnis-Modell (Standard)."
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -862,6 +867,7 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 }
+
 
 
 

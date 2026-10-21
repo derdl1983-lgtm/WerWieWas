@@ -15,7 +15,8 @@ import java.net.URL
 
 /**
  * Online-Bildanalyse über einen wählbaren KI-Anbieter
- * (Mistral, OpenAI-kompatibel, OpenRouter oder Google Gemini).
+ * (Mistral, OpenAI-kompatibel, OpenRouter, Google Gemini,
+ * Anthropic Claude oder xAI Grok).
  * Läuft ausschließlich online mit dem eigenen API-Schlüssel des Nutzers und
  * nur nach ausdrücklicher Einwilligung pro Foto.
  */
@@ -39,12 +40,14 @@ object OnlineAnalyzer {
         val custom: String = ""
     )
 
-    val PROVIDERS = listOf("mistral", "openai", "openrouter", "gemini")
+    val PROVIDERS = listOf("mistral", "openai", "openrouter", "gemini", "anthropic", "xai")
 
     fun label(provider: String): String = when (provider) {
         "openai" -> "OpenAI-kompatibel"
         "openrouter" -> "OpenRouter"
         "gemini" -> "Google Gemini"
+        "anthropic" -> "Anthropic Claude"
+        "xai" -> "xAI Grok"
         else -> "Mistral"
     }
 
@@ -52,6 +55,8 @@ object OnlineAnalyzer {
         "openai" -> "gpt-6-luna"
         "openrouter" -> "google/gemini-3.8-flash"
         "gemini" -> "gemini-3.8-flash"
+        "anthropic" -> "claude-sonnet-5-5"
+        "xai" -> "grok-4.7"
         else -> "mistral-medium-2604"
     }
 
@@ -69,6 +74,9 @@ object OnlineAnalyzer {
             "google/gemini-3.6-flash",
             "openai/gpt-6.1-sol",
             "openai/gpt-6-luna",
+            "anthropic/claude-sonnet-5-5",
+            "anthropic/claude-haiku-5-5",
+            "x-ai/grok-4.7",
             "meta-llama/llama-4-scout"
         )
         "gemini" -> listOf(
@@ -77,6 +85,17 @@ object OnlineAnalyzer {
             "gemini-3.5-flash-lite",
             "gemini-3.1-pro-preview",
             "gemini-4-argon"
+        )
+        "anthropic" -> listOf(
+            "claude-haiku-5-5",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-fable-5-1"
+        )
+        "xai" -> listOf(
+            "grok-4.7",
+            "grok-4.6",
+            "grok-4.5"
         )
         else -> listOf(
             "mistral-medium-2604",
@@ -90,6 +109,8 @@ object OnlineAnalyzer {
         "openai" -> "https://platform.openai.com/api-keys"
         "openrouter" -> "https://openrouter.ai/settings/keys"
         "gemini" -> "https://aistudio.google.com/apikey"
+        "anthropic" -> "https://console.anthropic.com/"
+        "xai" -> "https://console.x.ai/"
         else -> "https://console.mistral.ai/"
     }
 
@@ -157,6 +178,8 @@ object OnlineAnalyzer {
                 ?: "https://api.openai.com/v1"
             "openrouter" -> "https://openrouter.ai/api/v1"
             "gemini" -> "https://generativelanguage.googleapis.com/v1beta"
+            "anthropic" -> "https://api.anthropic.com/v1"
+            "xai" -> "https://api.x.ai/v1"
             else -> "https://api.mistral.ai/v1"
         }
         return ProviderConfig(
@@ -182,6 +205,7 @@ object OnlineAnalyzer {
                 Base64.encodeToString(bytes, Base64.NO_WRAP)
             val content = when (config.provider) {
                 "gemini" -> requestGemini(config, dataUrl)
+                "anthropic" -> requestAnthropic(config, dataUrl)
                 else -> requestChatCompletions(config, dataUrl)
             }
             parse(content)
@@ -254,7 +278,47 @@ object OnlineAnalyzer {
         return sb.toString()
     }
 
-    private fun openPost(url: String, bearer: String): HttpURLConnection =
+    /** Anthropic Claude (Messages API, Bild als Base64-Quelle). */
+    private fun requestAnthropic(config: ProviderConfig, dataUrl: String): String {
+        val base64 = dataUrl.substringAfter("base64,")
+        val textPart = JSONObject().put("type", "text").put("text", promptFor(config))
+        val source = JSONObject()
+            .put("type", "base64")
+            .put("media_type", "image/jpeg")
+            .put("data", base64)
+        val imagePart = JSONObject().put("type", "image").put("source", source)
+        val contentParts = JSONArray().put(textPart).put(imagePart)
+        val message = JSONObject().put("role", "user").put("content", contentParts)
+        val body = JSONObject()
+            .put("model", config.model)
+            .put("max_tokens", 2000)
+            .put("temperature", 0.2)
+            .put("messages", JSONArray().put(message))
+        val conn = openPost(
+            config.baseUrl + "/messages", "",
+            mapOf(
+                "x-api-key" to config.apiKey,
+                "anthropic-version" to "2023-06-01"
+            )
+        )
+        val text = sendAndRead(conn, body.toString())
+        val o = JSONObject(text)
+        if (o.has("error")) {
+            val err = o.optJSONObject("error")
+            throw IllegalStateException(
+                "Claude-Fehler: " + (err?.optString("message") ?: err.toString())
+            )
+        }
+        val contentArr = o.getJSONArray("content")
+        val sb = StringBuilder()
+        for (i in 0 until contentArr.length()) {
+            val block = contentArr.getJSONObject(i)
+            if (block.optString("type") == "text") sb.append(block.optString("text"))
+        }
+        return sb.toString()
+    }
+
+    private fun openPost(url: String, bearer: String, extraHeaders: Map<String, String> = emptyMap()): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
@@ -262,6 +326,7 @@ object OnlineAnalyzer {
             readTimeout = 90000
             setRequestProperty("Content-Type", "application/json")
             if (bearer.isNotBlank()) setRequestProperty("Authorization", "Bearer " + bearer)
+            for ((k, v) in extraHeaders) setRequestProperty(k, v)
         }
 
     private fun sendAndRead(conn: HttpURLConnection, body: String): String {
@@ -339,4 +404,5 @@ object OnlineAnalyzer {
         )
     }
 }
+
 
