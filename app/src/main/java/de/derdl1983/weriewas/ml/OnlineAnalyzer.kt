@@ -179,8 +179,14 @@ object OnlineAnalyzer {
             .put("messages", messages)
         val conn = openPost(config.baseUrl + "/chat/completions", config.apiKey)
         val text = sendAndRead(conn, body.toString())
-        return JSONObject(text)
-            .getJSONArray("choices")
+        val o = JSONObject(text)
+        if (o.has("error")) {
+            val err = o.optJSONObject("error")
+            throw IllegalStateException(
+                "KI-API-Fehler: " + (err?.optString("message") ?: err.toString())
+            )
+        }
+        return o.getJSONArray("choices")
             .getJSONObject(0)
             .getJSONObject("message")
             .getString("content")
@@ -202,7 +208,14 @@ object OnlineAnalyzer {
         val url = config.baseUrl + "/models/" + config.model + ":generateContent?key=" + config.apiKey
         val conn = openPost(url, "")
         val text = sendAndRead(conn, body.toString())
-        val candidates = JSONObject(text).getJSONArray("candidates")
+        val o = JSONObject(text)
+        if (o.has("error")) {
+            val err = o.optJSONObject("error")
+            throw IllegalStateException(
+                "Gemini-Fehler: " + (err?.optString("message") ?: err.toString())
+            )
+        }
+        val candidates = o.getJSONArray("candidates")
         val responseParts = candidates.getJSONObject(0)
             .getJSONObject("content")
             .getJSONArray("parts")
@@ -230,12 +243,39 @@ object OnlineAnalyzer {
             val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
                 ?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) {
-                throw IllegalStateException("KI-API-Fehler (HTTP " + code + ")")
+                // Fehlerursache aus der API-Antwort heraussuchen und verständlich melden
+                val reason = extractApiError(text)
+                val hint = when {
+                    code == 401 || code == 403 ->
+                        "Zugriff verweigert (HTTP " + code + "). Prüfe deinen API-Schlüssel."
+                    code == 404 ->
+                        "Adresse oder Modell nicht gefunden (HTTP 404). Prüfe Modellname und Basis-URL."
+                    code == 429 ->
+                        "Anfragelimit erreicht (HTTP 429). Warte kurz und versuche es erneut."
+                    code >= 500 ->
+                        "Der KI-Dienst hat ein Problem (HTTP " + code + "). Versuche es später erneut."
+                    else -> "HTTP-Fehler " + code
+                }
+                throw IllegalStateException(hint + (if (reason.isNotBlank()) " – " + reason else ""))
             }
             return text
         } finally {
             conn.disconnect()
         }
+    }
+
+    /** Extrahiert eine kurze Fehlermeldung aus einer JSON-Fehlerantwort der API. */
+    private fun extractApiError(text: String): String {
+        if (text.isBlank()) return ""
+        return runCatching {
+            val o = JSONObject(text)
+            val err = o.optJSONObject("error")
+            when {
+                err != null -> err.optString("message", "").take(200)
+                o.has("message") -> o.optString("message", "").take(200)
+                else -> ""
+            }
+        }.getOrDefault("")
     }
 
     private fun parse(content: String): Explanation {
