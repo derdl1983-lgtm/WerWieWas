@@ -38,6 +38,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -116,6 +117,9 @@ fun ResultScreen(
     val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
     var discovery by remember(discoveryId) { mutableStateOf(DiscoveryStore.get(context, discoveryId)) }
     var showDelete by remember { mutableStateOf(false) }
+    var showOnlineDialog by remember { mutableStateOf(false) }
+    var onlineRunning by remember { mutableStateOf(false) }
+    var onlineError by remember { mutableStateOf<String?>(null) }
 
     val d = discovery
     if (d == null) {
@@ -533,6 +537,40 @@ fun ResultScreen(
                 }
             }
 
+            // ---------- Optionale Online-Tiefenanalyse ----------
+            if (d.explanation.source != "online" && OnlineAnalyzer.isConfigured(context)) {
+                if (onlineRunning) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Tiefenanalyse läuft …", style = MaterialTheme.typography.bodyMedium)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = { onlineError = null; showOnlineDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "Tiefenanalyse online (" +
+                                OnlineAnalyzer.label(OnlineAnalyzer.currentProvider(context)) +
+                                ")"
+                        )
+                    }
+                }
+                onlineError?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
             Button(
                 onClick = { stopReading(); onVideo() },
                 modifier = Modifier.fillMaxWidth()
@@ -571,6 +609,53 @@ fun ResultScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDelete = false }) { Text("Abbrechen") }
+            }
+        )
+    }
+
+    if (showOnlineDialog) {
+        AlertDialog(
+            onDismissRequest = { showOnlineDialog = false },
+            title = { Text("Online-Tiefenanalyse?") },
+            text = {
+                Text(
+                    "Das Foto wird einmalig an " +
+                        OnlineAnalyzer.label(OnlineAnalyzer.currentProvider(context)) +
+                        " gesendet und mit deinem eigenen API-Schlüssel analysiert. " +
+                        "Die ausführliche Online-Erklärung ersetzt dann die lokale."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showOnlineDialog = false
+                        onlineRunning = true
+                        onlineError = null
+                        scope.launch {
+                            try {
+                                val config = OnlineAnalyzer.loadConfig(context)
+                                if (config == null) {
+                                    onlineError = "Kein KI-Anbieter konfiguriert. Prüfe die Einstellungen."
+                                } else {
+                                    val explanation = OnlineAnalyzer.analyze(d.imagePath, config)
+                                    val updated = d.copy(explanation = explanation)
+                                    withContext(Dispatchers.IO) {
+                                        DiscoveryStore.update(context, updated)
+                                    }
+                                    discovery = DiscoveryStore.get(context, d.id)
+                                }
+                            } catch (e: Exception) {
+                                onlineError = "Online-Analyse fehlgeschlagen: " +
+                                    (e.message ?: "unbekannter Fehler")
+                            } finally {
+                                onlineRunning = false
+                            }
+                        }
+                    }
+                ) { Text("Jetzt analysieren") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showOnlineDialog = false }) { Text("Abbrechen") }
             }
         )
     }
@@ -655,4 +740,5 @@ private fun shareDiscovery(context: Context, d: Discovery) {
         )
     }
 }
+
 

@@ -75,6 +75,16 @@ object DiscoveryStore {
     fun get(context: Context, id: String): Discovery? =
         loadAll(context).firstOrNull { it.id == id }
 
+    /** Aktualisiert eine bestehende Entdeckung (z. B. nach Online-Tiefenanalyse). */
+    fun update(context: Context, discovery: Discovery) {
+        val list = loadAll(context)
+        val idx = list.indexOfFirst { it.id == discovery.id }
+        if (idx >= 0) {
+            list[idx] = discovery
+            saveAll(context, list)
+        }
+    }
+
     fun toggleFavorite(context: Context, id: String) {
         val list = loadAll(context)
         val d = list.firstOrNull { it.id == id }
@@ -170,3 +180,4 @@ object DiscoveryStore {
         )
     }
 }
+

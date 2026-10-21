@@ -339,6 +339,10 @@ object EdgeTTS {
 
     private fun requestId(): String = UUID.randomUUID().toString().replace("-", "")
 
+    /** Zufällige MUID (32 hex-Zeichen, Großbuchstaben) wie die Edge-Referenz (DRM.generate_muid). */
+    private fun muid(): String =
+        UUID.randomUUID().toString().replace("-", "").uppercase()
+
     /** Fehler, bei dem ein Retry mit korrigierter Uhrzeit sinnvoll ist. */
     private class SkewException(message: String, val skewSeconds: Long) : IOException(message)
 
@@ -394,6 +398,8 @@ object EdgeTTS {
                 .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
                 .header("Pragma", "no-cache")
                 .header("Cache-Control", "no-cache")
+                .header("Cookie", "muid=" + muid() + ";")
+                .header("Accept-Language", "en-US,en;q=0.9")
                 .build(),
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -577,4 +583,5 @@ object EdgeTTS {
         }
     }
 }
+
 

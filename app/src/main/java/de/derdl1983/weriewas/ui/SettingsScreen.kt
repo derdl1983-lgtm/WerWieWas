@@ -505,6 +505,9 @@ fun SettingsScreen(onClose: () -> Unit) {
                             "Wenn du möchtest, kannst du einen eigenen API-Schlüssel hinterlegen: " +
                             "Bei unsicheren Erkennungen fragt dich die App dann pro Foto, " +
                             "ob sie eine genauere Analyse online durchführen darf. " +
+                            "Zusätzlich findest du auf jeder Ergebnis-Seite den Button " +
+                            "\u201eTiefenanalyse online\u201c, mit dem du jede Erkennung " +
+                            "manuell von der KI ausführlich erklären lassen kannst. " +
                             "Du kannst zwischen verschiedenen KI-Anbietern wählen.",
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -564,6 +567,14 @@ fun SettingsScreen(onClose: () -> Unit) {
                             label = { Text("Basis-URL (leer = https://api.openai.com/v1)") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "Für OpenAI selbst dieses Feld LEER lassen. Nur bei einem anderen " +
+                                "OpenAI-kompatiblen Dienst (OpenRouter, Groq, lokaler Server) " +
+                                "dessen API-Endpunkt eintragen – das ist NICHT die Website-Adresse, " +
+                                "sondern die Server-Adresse, die meist auf /v1 endet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
                     }
                     val suggestions = OnlineAnalyzer.suggestedModels(provider)
@@ -852,4 +863,5 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 }
+
 
