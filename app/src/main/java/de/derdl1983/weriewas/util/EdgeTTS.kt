@@ -37,7 +37,9 @@ import java.util.concurrent.atomic.AtomicReference
  * falsch gehende Geräte-Uhr anhand des Date-Headers der Server-Antwort.
  *
  * Der Token-Algorithmus wurde Zeile für gegen die Referenzimplementierung
- * (rany2/edge-tts, src/edge_tts/drm.py) validiert.
+ * (rany2/edge-tts, src/edge_tts/drm.py) validiert; Handshake-URL, Header und
+ * Cookie entsprechen exakt dem echten Edge-Browser (communicate.py). Notfalls
+ * wird die Server-Zeit zusätzlich über den Stimmlisten-Endpunkt ermittelt.
  */
 object EdgeTTS {
 
@@ -360,6 +362,34 @@ object EdgeTTS {
     }
 
     /**
+     * Holt die aktuelle Server-Zeit über den Stimmlisten-Endpunkt, falls die
+     * abgewiesene Handshake-Antwort keinen Date-Header enthielt. Der Statuscode
+     * ist dabei egal – jede Antwort trägt das Datum des Servers im Date-Header.
+     */
+    private fun fetchServerTimeSeconds(skewSeconds: Long): Long? {
+        val client = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .build()
+        return try {
+            val url = ("https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list"
+                + "?trustedclienttoken=" + TRUSTED_CLIENT_TOKEN
+                + "&Sec-MS-GEC=" + secMsGecV2(skewSeconds)
+                + "&Sec-MS-GEC-Version=2-" + CHROMIUM_FULL_VERSION)
+            val req = Request.Builder().url(url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Cookie", "muid=" + muid() + ";")
+                .build()
+            client.newCall(req).execute().use { resp -> parseServerDate(resp.header("Date")) }
+        } catch (e: Exception) {
+            null
+        } finally {
+            client.dispatcher.executorService.shutdown()
+        }
+    }
+
+    /**
      * Synthetisiert Text zu einer MP3-Datei (24 kHz, 48 kbit/s, mono).
      * Blockierend – im Hintergrund-Thread aufrufen. ratePercent: -50 bis +100.
      * Bei 401/403 wird die Geräte-Uhr anhand der Server-Zeit korrigiert und
@@ -368,7 +398,7 @@ object EdgeTTS {
     fun synthesizeToMp3(text: String, voice: String, ratePercent: Int, outFile: File): File {
         var skew = 0L
         var last: SkewException? = null
-        for (attempt in 0 until 2) {
+        for (attempt in 0 until 3) {
             try {
                 return synthesizeOnce(text, voice, ratePercent, outFile, skew)
             } catch (e: SkewException) {
@@ -380,11 +410,13 @@ object EdgeTTS {
     }
 
     private fun synthesizeOnce(text: String, voice: String, ratePercent: Int, outFile: File, skewSeconds: Long): File {
+        // Reihenfolge wie in der Referenz (communicate.py): TrustedClientToken,
+        // ConnectionId, Sec-MS-GEC, Sec-MS-GEC-Version.
         val url = ("wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
             + "?TrustedClientToken=" + TRUSTED_CLIENT_TOKEN
+            + "&ConnectionId=" + requestId()
             + "&Sec-MS-GEC=" + secMsGecV2(skewSeconds)
-            + "&Sec-MS-GEC-Version=2-" + CHROMIUM_FULL_VERSION
-            + "&ConnectionId=" + requestId())
+            + "&Sec-MS-GEC-Version=2-" + CHROMIUM_FULL_VERSION)
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
@@ -393,13 +425,16 @@ object EdgeTTS {
         val done = CountDownLatch(1)
         val failure = AtomicReference<FailInfo?>(null)
         val ws = client.newWebSocket(
+            // Header-Reihenfolge und -Inhalt wie der echte Edge-Browser
+            // (Accept-Encoding fehlte zuvor – OkHttp sendet nur „gzip“).
             Request.Builder().url(url)
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
-                .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
+                .header("Accept-Encoding", "gzip, deflate, br, zstd")
+                .header("Accept-Language", "en-US,en;q=0.9")
                 .header("Pragma", "no-cache")
                 .header("Cache-Control", "no-cache")
+                .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
                 .header("Cookie", "muid=" + muid() + ";")
-                .header("Accept-Language", "en-US,en;q=0.9")
                 .build(),
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -463,125 +498,3 @@ object EdgeTTS {
             if (err != null) {
                 val code = err.code
                 if (code == 401 || code == 403) {
-                    val server = parseServerDate(err.dateHeader)
-                    val hint = if (code == 401) {
-                        "Zugriff verweigert (401): Token oder Uhrzeit ungültig. Prüfe Datum, Uhrzeit und Zeitzone deines Geräts."
-                    } else {
-                        "Zugriff verweigert (403): Der Dienst wurde vom Anbieter gesperrt."
-                    }
-                    val msg = "Verbindung fehlgeschlagen (HTTP " + code + "): " + hint
-                    if (server != null) {
-                        throw SkewException(msg, server - System.currentTimeMillis() / 1000L)
-                    }
-                    throw IOException(msg)
-                }
-                throw IOException(
-                    "Verbindung fehlgeschlagen" +
-                        (if (code != null) " (HTTP " + code + ")" else "") +
-                        ": " + (err.message ?: "unbekannter Fehler")
-                )
-            }
-            val mp3 = audio.toByteArray()
-            if (mp3.size < 200) throw IOException("Keine Audiodaten empfangen.")
-            outFile.parentFile?.mkdirs()
-            outFile.writeBytes(mp3)
-            return outFile
-        } finally {
-            ws.cancel()
-            client.dispatcher.executorService.shutdown()
-        }
-    }
-
-    /** Dekodiert eine MP3-Datei in eine WAV-Datei (16-Bit-PCM) für den Video-Export. */
-    fun mp3ToWav(mp3File: File, wavFile: File): File {
-        val extractor = MediaExtractor()
-        try {
-            extractor.setDataSource(mp3File.absolutePath)
-        } catch (e: Exception) {
-            throw IOException("MP3 konnte nicht gelesen werden.")
-        }
-        try {
-            var trackIndex = -1
-            var trackFormat: MediaFormat? = null
-            for (i in 0 until extractor.trackCount) {
-                val f = extractor.getTrackFormat(i)
-                if (f.getString(MediaFormat.KEY_MIME) == "audio/mpeg") {
-                    trackIndex = i
-                    trackFormat = f
-                    break
-                }
-            }
-            if (trackIndex < 0 || trackFormat == null) throw IOException("Keine MP3-Spur gefunden.")
-            extractor.selectTrack(trackIndex)
-            val codec = MediaCodec.createDecoderByType("audio/mpeg")
-            val pcm = ByteArrayOutputStream()
-            val input = ByteBuffer.allocate(1 shl 16)
-            val info = MediaCodec.BufferInfo()
-            var inputDone = false
-            var outputDone = false
-            codec.configure(trackFormat, null, null, 0)
-            codec.start()
-            try {
-                while (!outputDone) {
-                    if (!inputDone) {
-                        val idx = codec.dequeueInputBuffer(10000)
-                        if (idx >= 0) {
-                            val n = extractor.readSampleData(input, 0)
-                            if (n < 0) {
-                                codec.queueInputBuffer(idx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                inputDone = true
-                            } else {
-                                codec.queueInputBuffer(idx, 0, n, extractor.sampleTime, 0)
-                                extractor.advance()
-                            }
-                        }
-                    }
-                    val oidx = codec.dequeueOutputBuffer(info, 10000)
-                    if (oidx >= 0) {
-                        val out = codec.getOutputBuffer(oidx)
-                        if (out != null && info.size > 0) {
-                            val arr = ByteArray(info.size)
-                            out.get(arr)
-                            pcm.write(arr)
-                        }
-                        codec.releaseOutputBuffer(oidx, false)
-                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
-                    }
-                }
-            } finally {
-                codec.stop()
-                codec.release()
-            }
-            val sampleRate = trackFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            val channels = trackFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            writeWav(wavFile, pcm.toByteArray(), sampleRate, channels)
-            return wavFile
-        } finally {
-            extractor.release()
-        }
-    }
-
-    /** Schreibt 16-Bit-PCM als WAV-Datei. */
-    private fun writeWav(out: File, pcm: ByteArray, sampleRate: Int, channels: Int) {
-        val blockAlign = channels * 2
-        val byteRate = sampleRate * blockAlign
-        DataOutputStream(FileOutputStream(out)).use { w ->
-            w.writeBytes("RIFF")
-            w.writeInt(Integer.reverseBytes(36 + pcm.size))
-            w.writeBytes("WAVE")
-            w.writeBytes("fmt ")
-            w.writeInt(Integer.reverseBytes(16))
-            w.writeShort(java.lang.Short.reverseBytes(1.toShort()).toInt())
-            w.writeShort(java.lang.Short.reverseBytes(channels.toShort()).toInt())
-            w.writeInt(Integer.reverseBytes(sampleRate))
-            w.writeInt(Integer.reverseBytes(byteRate))
-            w.writeShort(java.lang.Short.reverseBytes(blockAlign.toShort()).toInt())
-            w.writeShort(java.lang.Short.reverseBytes(16.toShort()).toInt())
-            w.writeBytes("data")
-            w.writeInt(Integer.reverseBytes(pcm.size))
-            w.write(pcm)
-        }
-    }
-}
-
-
