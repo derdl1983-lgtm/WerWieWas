@@ -498,3 +498,130 @@ object EdgeTTS {
             if (err != null) {
                 val code = err.code
                 if (code == 401 || code == 403) {
+                    // Server-Zeit aus der Antwort ableiten; liefert der Server keinen
+                    // Date-Header, wird sie über den Stimmlisten-Endpunkt nachgefragt.
+                    val server = parseServerDate(err.dateHeader) ?: fetchServerTimeSeconds(skewSeconds)
+                    val hint = if (code == 401) {
+                        "Zugriff verweigert (401): Token oder Uhrzeit ungültig. " +
+                            "Stelle sicher, dass Datum, Uhrzeit und Zeitzone deines Geräts " +
+                            "korrekt sind (am besten „Datum und Uhrzeit automatisch“ aktivieren)."
+                    } else {
+                        "Zugriff verweigert (403): Der Dienst wurde vom Anbieter gesperrt."
+                    }
+                    val msg = "Verbindung fehlgeschlagen (HTTP " + code + "): " + hint
+                    if (server != null) {
+                        throw SkewException(msg, server - System.currentTimeMillis() / 1000L)
+                    }
+                    throw IOException(msg)
+                }
+                throw IOException(
+                    "Verbindung fehlgeschlagen" +
+                        (if (code != null) " (HTTP " + code + ")" else "") +
+                        ": " + (err.message ?: "unbekannter Fehler")
+                )
+            }
+            val mp3 = audio.toByteArray()
+            if (mp3.size < 200) throw IOException("Keine Audiodaten empfangen.")
+            outFile.parentFile?.mkdirs()
+            outFile.writeBytes(mp3)
+            return outFile
+        } finally {
+            ws.cancel()
+            client.dispatcher.executorService.shutdown()
+        }
+    }
+
+    /** Dekodiert eine MP3-Datei in eine WAV-Datei (16-Bit-PCM) für den Video-Export. */
+    fun mp3ToWav(mp3File: File, wavFile: File): File {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(mp3File.absolutePath)
+        } catch (e: Exception) {
+            throw IOException("MP3 konnte nicht gelesen werden.")
+        }
+        try {
+            var trackIndex = -1
+            var trackFormat: MediaFormat? = null
+            for (i in 0 until extractor.trackCount) {
+                val f = extractor.getTrackFormat(i)
+                if (f.getString(MediaFormat.KEY_MIME) == "audio/mpeg") {
+                    trackIndex = i
+                    trackFormat = f
+                    break
+                }
+            }
+            if (trackIndex < 0 || trackFormat == null) throw IOException("Keine MP3-Spur gefunden.")
+            extractor.selectTrack(trackIndex)
+            val codec = MediaCodec.createDecoderByType("audio/mpeg")
+            val pcm = ByteArrayOutputStream()
+            val input = ByteBuffer.allocate(1 shl 16)
+            val info = MediaCodec.BufferInfo()
+            var inputDone = false
+            var outputDone = false
+            codec.configure(trackFormat, null, null, 0)
+            codec.start()
+            try {
+                while (!outputDone) {
+                    if (!inputDone) {
+                        val idx = codec.dequeueInputBuffer(10000)
+                        if (idx >= 0) {
+                            val n = extractor.readSampleData(input, 0)
+                            if (n < 0) {
+                                codec.queueInputBuffer(idx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                codec.queueInputBuffer(idx, 0, n, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                    val oidx = codec.dequeueOutputBuffer(info, 10000)
+                    if (oidx >= 0) {
+                        val out = codec.getOutputBuffer(oidx)
+                        if (out != null && info.size > 0) {
+                            val arr = ByteArray(info.size)
+                            out.get(arr)
+                            pcm.write(arr)
+                        }
+                        codec.releaseOutputBuffer(oidx, false)
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
+                    }
+                }
+            } finally {
+                codec.stop()
+                codec.release()
+            }
+            val sampleRate = trackFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            val channels = trackFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            writeWav(wavFile, pcm.toByteArray(), sampleRate, channels)
+            return wavFile
+        } finally {
+            extractor.release()
+        }
+    }
+
+    /** Schreibt 16-Bit-PCM als WAV-Datei. */
+    private fun writeWav(out: File, pcm: ByteArray, sampleRate: Int, channels: Int) {
+        val blockAlign = channels * 2
+        val byteRate = sampleRate * blockAlign
+        DataOutputStream(FileOutputStream(out)).use { w ->
+            w.writeBytes("RIFF")
+            w.writeInt(Integer.reverseBytes(36 + pcm.size))
+            w.writeBytes("WAVE")
+            w.writeBytes("fmt ")
+            w.writeInt(Integer.reverseBytes(16))
+            w.writeShort(java.lang.Short.reverseBytes(1.toShort()).toInt())
+            w.writeShort(java.lang.Short.reverseBytes(channels.toShort()).toInt())
+            w.writeInt(Integer.reverseBytes(sampleRate))
+            w.writeInt(Integer.reverseBytes(byteRate))
+            w.writeShort(java.lang.Short.reverseBytes(blockAlign.toShort()).toInt())
+            w.writeShort(java.lang.Short.reverseBytes(16.toShort()).toInt())
+            w.writeBytes("data")
+            w.writeInt(Integer.reverseBytes(pcm.size))
+            w.write(pcm)
+        }
+    }
+}
+
+
+
