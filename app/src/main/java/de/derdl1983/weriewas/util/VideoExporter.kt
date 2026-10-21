@@ -398,3 +398,278 @@ object VideoExporter {
                         buf.get(arr)
                         samples.add(Sample(arr, info.presentationTimeUs, info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME))
                     }
+                    codec.releaseOutputBuffer(oidx, false)
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                } else if (oidx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    outFormat = MediaFormat(codec.outputFormat)
+                }
+            }
+        } finally {
+            codec.stop()
+            codec.release()
+        }
+        return Pair(outFormat ?: format, samples)
+    }
+
+    /** Schreibt ARGB-Pixel in die YUV-Ebenen eines Encoder-Eingabildes. */
+    private fun fillYuv420(image: Image, argb: IntArray) {
+        val planes = image.planes
+        val yPlane = planes[0]
+        val uPlane = planes[1]
+        val vPlane = planes[2]
+        val yBuf = yPlane.buffer
+        val uBuf = uPlane.buffer
+        val vBuf = vPlane.buffer
+        val yRow = yPlane.rowStride
+        val yPix = yPlane.pixelStride
+        for (h in 0 until HEIGHT) {
+            for (w in 0 until WIDTH) {
+                val c = argb[h * WIDTH + w]
+                val r = (c shr 16) and 0xff
+                val g = (c shr 8) and 0xff
+                val b = c and 0xff
+                val y = ((66 * r + 129 * g + 25 * b + 128) shr 8) + 16
+                yBuf.put(h * yRow + w * yPix, y.toByte())
+            }
+        }
+        val uRow = uPlane.rowStride
+        val uPix = uPlane.pixelStride
+        val vRow = vPlane.rowStride
+        val vPix = vPlane.pixelStride
+        for (h in 0 until HEIGHT / 2) {
+            for (w in 0 until WIDTH / 2) {
+                val c = argb[(2 * h + 1) * WIDTH + (2 * w + 1)]
+                val r = (c shr 16) and 0xff
+                val g = (c shr 8) and 0xff
+                val b = c and 0xff
+                val u = ((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128
+                val v = ((112 * r - 94 * g - 18 * b + 128) shr 8) + 128
+                uBuf.put(h * uRow + w * uPix, u.toByte())
+                vBuf.put(h * vRow + w * vPix, v.toByte())
+            }
+        }
+    }
+
+    /** Muxt Video- und Tonspur in eine MP4-Datei im App-Cache. */
+    private fun mux(context: Context, audio: Pair<MediaFormat, List<Sample>>, video: Pair<MediaFormat, List<Sample>>): File {
+        val file = File(context.cacheDir, "erklarvideo_" + System.currentTimeMillis() + ".mp4")
+        val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        try {
+            val vTrack = muxer.addTrack(video.first)
+            val aTrack = muxer.addTrack(audio.first)
+            muxer.start()
+            for (s in video.second) {
+                val info = MediaCodec.BufferInfo()
+                info.set(0, s.data.size, s.ptsUs, s.flags)
+                muxer.writeSampleData(vTrack, ByteBuffer.wrap(s.data), info)
+            }
+            for (s in audio.second) {
+                val info = MediaCodec.BufferInfo()
+                info.set(0, s.data.size, s.ptsUs, s.flags)
+                muxer.writeSampleData(aTrack, ByteBuffer.wrap(s.data), info)
+            }
+            muxer.stop()
+        } finally {
+            muxer.release()
+        }
+        return file
+    }
+
+    /** Speichert das fertige Video in der Mediathek (ab Android 10) bzw. im App-Ordner. */
+    private fun saveVideo(context: Context, file: File): ExportResult {
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, file.name)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/WerWieWas")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                ?: throw ExportException("Video konnte nicht gespeichert werden.")
+            context.contentResolver.openOutputStream(uri)?.use { it.write(file.readBytes()) }
+                ?: throw ExportException("Video konnte nicht gespeichert werden.")
+            file.delete()
+            return ExportResult("Video gespeichert unter Filme/WerWieWas/" + file.name, uri)
+        }
+        val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir, "videos")
+        dir.mkdirs()
+        val target = File(dir, file.name)
+        file.copyTo(target, overwrite = true)
+        file.delete()
+        // Content-URI über den FileProvider, damit das Video direkt geteilt werden kann
+        val shareUri = runCatching {
+            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", target)
+        }.getOrNull()
+        return ExportResult("Video gespeichert unter: " + target.absolutePath, shareUri)
+    }
+
+    /** Baut aus Szenen und Zeitbereichen den Inhalt einer SRT-Untertiteldatei. */
+    private fun buildSrt(slides: List<SlideData>, ranges: List<LongRange>): String {
+        val sb = StringBuilder()
+        for (i in slides.indices) {
+            val range = ranges.getOrNull(i) ?: continue
+            sb.append(i + 1).append('\n')
+            sb.append(srtTime(range.first)).append(" --> ").append(srtTime(range.last)).append('\n')
+            sb.append(slides[i].title).append('\n')
+            sb.append(slides[i].text).append('\n')
+            sb.append('\n')
+        }
+        return sb.toString()
+    }
+
+    /** Formatiert einen Mikrosekunden-Zeitpunkt als SRT-Zeitstempel (HH:MM:SS,mmm). */
+    private fun srtTime(us: Long): String {
+        val ms = us / 1000
+        return String.format(
+            Locale.US,
+            "%02d:%02d:%02d,%03d",
+            ms / 3600000,
+            (ms % 3600000) / 60000,
+            (ms % 60000) / 1000,
+            ms % 1000
+        )
+    }
+
+    /** Speichert die SRT-Untertiteldatei in Downloads (ab Android 10) bzw. im App-Ordner. */
+    private fun saveSrt(context: Context, videoBase: String, content: String): Uri? {
+        val fileName = videoBase + ".srt"
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.MIME_TYPE, "application/x-subrip")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/WerWieWas")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return null
+            context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+            return uri
+        }
+        return runCatching {
+            val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir, "videos")
+            dir.mkdirs()
+            val target = File(dir, fileName)
+            target.writeText(content)
+            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", target)
+        }.getOrNull()
+    }
+
+    /** Rendert eine Szene als Standbild (Gradient-Hintergrund, Foto, Emoji, Titel, Text). */
+    private fun renderSlide(slide: SlideData, index: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val palettes = arrayOf(
+            intArrayOf(0xFF1A237E.toInt(), 0xFF3949AB.toInt()),
+            intArrayOf(0xFF00695C.toInt(), 0xFF00897B.toInt()),
+            intArrayOf(0xFF4A148C.toInt(), 0xFF6A1B9A.toInt()),
+            intArrayOf(0xFF0277BD.toInt(), 0xFF0288D1.toInt()),
+            intArrayOf(0xFF283593.toInt(), 0xFF3F51B5.toInt()),
+            intArrayOf(0xFF33691E.toInt(), 0xFF558B2F.toInt()),
+            intArrayOf(0xFFBF360C.toInt(), 0xFFD84315.toInt()),
+            intArrayOf(0xFF37474F.toInt(), 0xFF455A64.toInt())
+        )
+        val colors = palettes[index % palettes.size]
+        val bg = Paint()
+        bg.shader = LinearGradient(0f, 0f, 0f, HEIGHT.toFloat(), colors[0], colors[1], Shader.TileMode.CLAMP)
+        canvas.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bg)
+
+        var top = if (HEIGHT > WIDTH) 140f * scale else 80f * scale
+        var hasImage = false
+        if (slide.photoPath != null) {
+            val photo = BitmapFactory.decodeFile(slide.photoPath)
+            if (photo != null) {
+                hasImage = true
+                val photoH = minOf(600f * scale, HEIGHT * 0.32f)
+                val target = RectF(60f * scale, top, WIDTH - 60f * scale, top + photoH)
+                val matrix = Matrix()
+                matrix.setRectToRect(
+                    RectF(0f, 0f, photo.width.toFloat(), photo.height.toFloat()),
+                    target,
+                    Matrix.ScaleToFit.CENTER
+                )
+                canvas.drawBitmap(photo, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
+                photo.recycle()
+                top += photoH + 60f * scale
+            }
+        } else if (slide.webImagePath != null) {
+            // Passendes Online-Themenbild (frei lizenziert, mit Quellenzeile)
+            val web = BitmapFactory.decodeFile(slide.webImagePath)
+            if (web != null) {
+                hasImage = true
+                val webH = minOf(460f * scale, HEIGHT * 0.26f)
+                val target = RectF(60f * scale, top, WIDTH - 60f * scale, top + webH)
+                drawCenterCrop(canvas, web, target)
+                web.recycle()
+                top += webH + 20f * scale
+                val credit = slide.webImageCredit
+                if (!credit.isNullOrBlank()) {
+                    val cp = Paint(Paint.ANTI_ALIAS_FLAG)
+                    cp.textSize = 26f * scale
+                    cp.textAlign = Paint.Align.CENTER
+                    cp.color = Color.argb(210, 255, 255, 255)
+                    canvas.drawText("Bild: " + credit, WIDTH / 2f, top, cp)
+                    top += 64f * scale
+                }
+            }
+        }
+        if (slide.emoji.isNotBlank() && !hasImage) {
+            val p = Paint(Paint.ANTI_ALIAS_FLAG)
+            p.textSize = 190f * scale
+            p.textAlign = Paint.Align.CENTER
+            p.color = Color.WHITE
+            val fm = p.fontMetrics
+            canvas.drawText(slide.emoji, WIDTH / 2f, top + 95f * scale - (fm.top + fm.bottom) / 2f, p)
+            top += 280f * scale
+        }
+        val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        titlePaint.textSize = 62f * scale
+        titlePaint.isFakeBoldText = true
+        titlePaint.color = Color.WHITE
+        val titleLayout = StaticLayout.Builder.obtain(
+            slide.title, 0, slide.title.length, titlePaint, (WIDTH - 160f * scale).toInt()
+        ).setAlignment(Layout.Alignment.ALIGN_CENTER).build()
+        canvas.save()
+        canvas.translate((WIDTH - titleLayout.width) / 2f, top)
+        titleLayout.draw(canvas)
+        canvas.restore()
+        top += titleLayout.height + 60f * scale
+
+        // Fließtext – der Schriftgrad passt sich an, damit der Text auch unter
+        // einem Themenbild vollständig auf die Szene passt.
+        val makeBody: (Float) -> StaticLayout = { size ->
+            val bp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            bp.textSize = size
+            bp.color = Color.WHITE
+            StaticLayout.Builder.obtain(
+                slide.text, 0, slide.text.length, bp, (WIDTH - 160f * scale).toInt()
+            ).setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(0f, 1.25f).build()
+        }
+        var bodySize = 42f * scale
+        var bodyLayout = makeBody(bodySize)
+        while (top + bodyLayout.height > HEIGHT - 80f * scale && bodySize > 26f * scale) {
+            bodySize -= 4f * scale
+            bodyLayout = makeBody(bodySize)
+        }
+        canvas.save()
+        canvas.translate((WIDTH - bodyLayout.width) / 2f, top)
+        bodyLayout.draw(canvas)
+        canvas.restore()
+        return bmp
+    }
+
+    /** Zeichnet eine Bitmap formatfüllend und mittig beschnitten in ein Zielrechteck. */
+    private fun drawCenterCrop(canvas: Canvas, bmp: Bitmap, target: RectF) {
+        val scale = maxOf(target.width() / bmp.width, target.height() / bmp.height)
+        val matrix = Matrix()
+        matrix.postScale(scale, scale)
+        val w = bmp.width * scale
+        val h = bmp.height * scale
+        matrix.postTranslate(target.left + (target.width() - w) / 2f, target.top + (target.height() - h) / 2f)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        canvas.save()
+        canvas.clipRect(target)
+        canvas.drawBitmap(bmp, matrix, paint)
+        canvas.restore()
+    }
+}
+
+
+
