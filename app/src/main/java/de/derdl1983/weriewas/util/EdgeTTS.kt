@@ -3,12 +3,12 @@ package de.derdl1983.weriewas.util
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
-import okhttp3.ByteString
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.io.File
