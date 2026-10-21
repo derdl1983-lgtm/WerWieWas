@@ -41,7 +41,9 @@ import de.derdl1983.weriewas.ml.AnalysisResult
 import de.derdl1983.weriewas.ml.ImageAnalyzer
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import de.derdl1983.weriewas.util.Images
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /** Liest den API-Schlüssel des aktuell gewählten KI-Anbieters aus den App-Einstellungen. */
@@ -63,7 +65,8 @@ fun AnalyzeScreen(
     var waitingForConsent by remember { mutableStateOf(false) }
     var pendingResult by remember { mutableStateOf<AnalysisResult?>(null) }
 
-    fun saveAndFinish(result: AnalysisResult) {
+    // Speichern schreibt Dateien – bewusst außerhalb des Main-Threads.
+    suspend fun saveAndFinish(result: AnalysisResult) {
         val discovery = Discovery(
             id = UUID.randomUUID().toString(),
             imagePath = imagePath,
@@ -71,7 +74,9 @@ fun AnalyzeScreen(
             labels = result.labels,
             explanation = result.explanation
         )
-        DiscoveryStore.add(context, discovery)
+        withContext(Dispatchers.IO) {
+            DiscoveryStore.add(context, discovery)
+        }
         onDone(discovery.id)
     }
 
@@ -125,7 +130,7 @@ fun AnalyzeScreen(
                                 )
                             }
                         } else if (localResult != null) {
-                            saveAndFinish(localResult)
+                            scope.launch { saveAndFinish(localResult) }
                         }
                     }
                 ) { Text("Ja, online analysieren") }
@@ -134,7 +139,10 @@ fun AnalyzeScreen(
                 TextButton(
                     onClick = {
                         waitingForConsent = false
-                        pendingResult?.let { saveAndFinish(it) }
+                        val localResult = pendingResult
+                        if (localResult != null) {
+                            scope.launch { saveAndFinish(localResult) }
+                        }
                     }
                 ) { Text("Nein, lokal bleiben") }
             }

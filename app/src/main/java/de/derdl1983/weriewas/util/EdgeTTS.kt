@@ -1,5 +1,6 @@
 package de.derdl1983.weriewas.util
 
+import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -34,6 +35,9 @@ import java.util.concurrent.atomic.AtomicReference
  * 401 Unauthorized abgelehnt. Diese Implementierung erzeugt das v2-Token
  * (CS64-Prüfsumme + angepasstes SHA-256) und korrigiert automatisch eine
  * falsch gehende Geräte-Uhr anhand des Date-Headers der Server-Antwort.
+ *
+ * Der Token-Algorithmus wurde Zeile für gegen die Referenzimplementierung
+ * (rany2/edge-tts, src/edge_tts/drm.py) validiert.
  */
 object EdgeTTS {
 
@@ -56,6 +60,23 @@ object EdgeTTS {
 
     fun labelFor(id: String): String =
         GERMAN_VOICES.firstOrNull { it.id == id }?.label ?: id
+
+    /**
+     * Löscht abgelegte Sprachdateien aus dem App-Cache, die älter als
+     * 24 Stunden sind. Wird beim App-Start aufgerufen.
+     */
+    fun pruneCache(context: Context) {
+        try {
+            val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
+            context.cacheDir.listFiles()?.forEach { file ->
+                if (file.isFile && file.name.startsWith("www_") && file.lastModified() < cutoff) {
+                    file.delete()
+                }
+            }
+        } catch (e: Exception) {
+            // Cache-Bereinigung ist optional
+        }
+    }
 
     private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491A6F4"
     private const val WIN_EPOCH = 11644473600L
@@ -135,10 +156,12 @@ object EdgeTTS {
         var e = state[4]; var f = state[5]; var g = state[6]; var h = state[7]
         for (i in firstRound until 64) {
             val s1 = rotr(e, 6) xor rotr(e, 11) xor rotr(e, 25)
-            val ch = (e and f) xor g
+            // Auswahl-Funktion der Referenz: g ^ (e & (f ^ g))
+            // (entspricht (e & f) ^ (~e & g); der Term ^ (e & g) darf nicht fehlen!)
+            val ch = g xor (e and (f xor g))
             val t1 = h + s1 + ch + constants[i] + words[i]
             val s0 = rotr(a, 2) xor rotr(a, 13) xor rotr(a, 22)
-            val maj = (a and b) xor (a and c) xor (b and c)
+            val maj = (a and b) or (c and (a or b))
             val t2 = s0 + maj
             h = g; g = f; f = e; e = d + t1
             d = c; c = b; b = a; a = t1 + t2
@@ -261,7 +284,8 @@ object EdgeTTS {
             t = state * keyB + y
             t = rol16(t) * 0xA27416F5.toInt()
             t = rol16(t) * 0xD38396FF.toInt()
-            state = rol16(rol16(t * 0x7C932B89.toInt()) * 0xBFA49F69.toInt())
+            // Reihenfolge der Referenz: rol16(rol16(t) * 0x7C932B89) * 0xBFA49F69
+            state = rol16(rol16(t) * 0x7C932B89.toInt()) * 0xBFA49F69.toInt()
             acc += state
             i += 2
         }
