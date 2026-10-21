@@ -83,13 +83,16 @@ object EdgeTTS {
     private const val CHROMIUM_FULL_VERSION = "143.0.3650.75"
 
     // ---------- Konstanten des Sec-MS-GEC-v2-Verfahrens ----------
+    // Wichtig: Alle Hex-Konstanten werden über toLong(16) geparst.
+    // String.toInt(16) würde bei Werten ab 0x80000000 eine NumberFormatException
+    // auslösen – das ließ die App beim ersten Öffnen der Stimmenauswahl abstürzen.
     // Startzustand der angepassten SHA-256-Variante.
     private val SHA256_INITIAL = "6A09E667 BB67AE85 3C6EF372 A54FF53A 510E527F 9B05688C 1F83D9AB 5BE0CD19"
-        .split(" ").map { it.toInt(16) }.toIntArray()
+        .split(" ").map { it.toLong(16).toInt() }.toIntArray()
     private val SHA256_STATE = "FD9FBEA2 91243CE7 BE499094 CD2E1E0A 6C006F49 04BD35AB FEB0A7E4 03EFFBD2"
-        .split(" ").map { it.toInt(16) }.toIntArray()
+        .split(" ").map { it.toLong(16).toInt() }.toIntArray()
     private val SHA256_SCHEDULE = "EB24BF9E 1558691F A0C09EE2 0CFA32BA A622EE8C D1DD9491 C0DD25A0 F9E70AB6 F0C31573 7058CE4E 7188E606 00E5AB33 D258B060 72766564"
-        .split(" ").map { it.toInt(16) }.toIntArray()
+        .split(" ").map { it.toLong(16).toInt() }.toIntArray()
     private val SHA256_ROUND_CONSTANTS = ("428A2F98 71374491 B5C0FBCF E9B5DBA5 3956C25B 59F111F1 923F82A4 AB1C5ED5" +
         " D807AA98 12835B01 243185BE 550C7DC3 72BE5D74 80DEB1FE 9BDC06A7 C19BF174" +
         " E49B69C1 EFBE4786 0FC19DC6 240CA1CC 2DE92C6F 4A7484AA 5CB0A9DC 76F988DA" +
@@ -98,7 +101,7 @@ object EdgeTTS {
         " A2BFE8A1 A81A664B C24B8B70 C76C51A3 D192E819 D6990624 F40E3585 106AA070" +
         " 19A4C116 1E376C08 2748774C 34B0BCB5 391C0CB3 4ED8AA4A 5B9CCA4F 682E6FF3" +
         " 748F82EE 78A5636F 84C87814 8CC70208 90BEFFFA A4506CEB BEF9A3F7 C67178F2")
-        .split(" ").map { it.toInt(16) }.toIntArray()
+        .split(" ").map { it.toLong(16).toInt() }.toIntArray()
     private val SHA256_ADJUSTMENT = 0xC9DC06A7.toInt()
     private val SIGMA0_ADJUSTMENT = 0x059C0B80.toInt()
     private val SIGMA1_ADJUSTMENT = 0x000B92C0.toInt()
@@ -111,7 +114,7 @@ object EdgeTTS {
         " 8D1EC211 D405B4D5 314EF5D5 26E55F3C E92491B1 607801C6 F0A5B9D5 82B2C1FB" +
         " 06064CF3 FA51A3DA DA79FA60 207CC464 BED20560 3C3C74F3 89F9C9F8 D2D14B61" +
         " 35FA38C6 BB04A2C1 CB49E3C6 C5626167")
-        .split(" ").map { it.toInt(16) }.chunked(2).map { p -> p[0] to p[1] }
+        .split(" ").map { it.toLong(16).toInt() }.chunked(2).map { p -> p[0] to p[1] }
     private val CS64_FACTOR = 0x82893933.toInt()
     private val CS64_ADJUSTMENT0 = 0xF2F90B1A.toInt()
     private val CS64_ADJUSTMENT1 = 0x0B1A0000.toInt()
@@ -574,3 +577,4 @@ object EdgeTTS {
         }
     }
 }
+

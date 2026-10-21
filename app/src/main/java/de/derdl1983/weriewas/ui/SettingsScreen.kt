@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import de.derdl1983.weriewas.WerWieWasApp
 import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import de.derdl1983.weriewas.util.EdgeTTS
@@ -124,6 +125,16 @@ fun SettingsScreen(onClose: () -> Unit) {
     // Verfügbare deutsche Stimmen der Sprachausgabe laden
     var germanVoices by remember { mutableStateOf<List<Voice>>(emptyList()) }
     var voicesReady by remember { mutableStateOf(false) }
+    var ttsError by remember { mutableStateOf(false) }
+    var crashLog by remember {
+        mutableStateOf(
+            try {
+                WerWieWasApp.latestCrashLog(context)?.takeIf { it.isFile }?.readText()?.take(800)
+            } catch (e: Exception) {
+                null
+            }
+        )
+    }
     var voiceAName by remember { mutableStateOf(prefs.getString("tts_voice_a", "") ?: "") }
     var voiceBName by remember { mutableStateOf(prefs.getString("tts_voice_b", "") ?: "") }
     var pickA by remember { mutableStateOf(false) }
@@ -140,18 +151,25 @@ fun SettingsScreen(onClose: () -> Unit) {
 
     DisposableEffect(Unit) {
         var engine: TextToSpeech? = null
-        engine = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                val e = engine
-                if (e != null) {
-                    germanVoices = try {
-                        e.voices?.filter { it.locale.language == "de" }?.sortedBy { it.name } ?: emptyList()
-                    } catch (ex: Exception) {
-                        emptyList<Voice>()
+        engine = try {
+            TextToSpeech(context) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    val e = engine
+                    if (e != null) {
+                        germanVoices = try {
+                            e.voices?.filter { it.locale.language == "de" }?.sortedBy { it.name } ?: emptyList()
+                        } catch (ex: Exception) {
+                            emptyList<Voice>()
+                        }
+                        voicesReady = true
                     }
-                    voicesReady = true
+                } else {
+                    ttsError = true
                 }
             }
+        } catch (e: Exception) {
+            ttsError = true
+            null
         }
         onDispose {
             engine?.stop()
@@ -278,7 +296,15 @@ fun SettingsScreen(onClose: () -> Unit) {
                             "im Erklärvideo abwechselnd sprechen.",
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    if (!voicesReady) {
+                    if (ttsError) {
+                        Text(
+                            "Sprachausgabe konnte nicht geladen werden. " +
+                                "Du kannst unten eine kostenlose Online-Stimme wählen – " +
+                                "sie funktioniert unabhängig von der Geräte-Sprachausgabe.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    } else if (!voicesReady) {
                         Text(
                             "Sprachausgabe wird geladen …",
                             style = MaterialTheme.typography.bodySmall,
@@ -637,6 +663,43 @@ fun SettingsScreen(onClose: () -> Unit) {
                             contentColor = MaterialTheme.colorScheme.error
                         )
                     ) { Text("Alle Entdeckungen löschen") }
+                    val log = crashLog
+                    if (log != null) {
+                        Text(
+                            "Letzter Fehlerbericht der App (entsteht nach einem Absturz):",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            log,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                runCatching {
+                                    val text = try {
+                                        WerWieWasApp.latestCrashLog(context)?.readText()?.take(8000)
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                    val send = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, text ?: "Kein Protokoll gefunden.")
+                                    }
+                                    context.startActivity(
+                                        Intent.createChooser(send, "Fehlerbericht teilen")
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                            }) { Text("Fehlerbericht teilen") }
+                            OutlinedButton(onClick = {
+                                WerWieWasApp.clearCrashLogs(context)
+                                crashLog = null
+                                Toast.makeText(context, "Protokoll gelöscht.", Toast.LENGTH_SHORT).show()
+                            }) { Text("Protokoll löschen") }
+                        }
+                    }
                 }
             }
 
@@ -789,3 +852,4 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 }
+

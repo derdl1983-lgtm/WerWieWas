@@ -67,6 +67,7 @@ import de.derdl1983.weriewas.util.EdgeTTS
 import de.derdl1983.weriewas.util.Images
 import de.derdl1983.weriewas.util.VideoExporter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -155,6 +156,7 @@ fun VideoScreen(
     var page by remember { mutableIntStateOf(0) }
     var playing by remember { mutableStateOf(true) }
     var ttsReady by remember { mutableStateOf(false) }
+    var ttsFailed by remember { mutableStateOf(false) }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
     var voiceA by remember { mutableStateOf<Voice?>(null) }
     var voiceB by remember { mutableStateOf<Voice?>(null) }
@@ -201,7 +203,8 @@ fun VideoScreen(
 
     DisposableEffect(Unit) {
         var engine: TextToSpeech? = null
-        engine = TextToSpeech(context) { status ->
+        engine = try {
+            TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 engine?.let { ttsEngine ->
                     ttsEngine.setLanguage(Locale.GERMANY)
@@ -240,7 +243,13 @@ fun VideoScreen(
                     })
                     ttsReady = true
                 }
+            } else {
+                ttsFailed = true
             }
+            }
+        } catch (e: Exception) {
+            ttsFailed = true
+            null
         }
         tts = engine
         onDispose {
@@ -248,6 +257,14 @@ fun VideoScreen(
             engine?.shutdown()
             tts = null
             ttsReady = false
+        }
+    }
+
+    // Zeitüberschreitung, falls die System-Sprachausgabe nie bereit wird
+    LaunchedEffect(ttsReady) {
+        if (!useEdge && !ttsReady) {
+            delay(20000)
+            if (!ttsReady) ttsFailed = true
         }
     }
 
@@ -288,7 +305,7 @@ fun VideoScreen(
         edgeError = null
         try {
             val mp3 = withContext(Dispatchers.IO) {
-                val f = File(context.cacheDir, "www_edge_" + page + "_" + rp + ".mp3")
+                val f = File(context.cacheDir, "www_edge_" + discovery.id + "_" + page + "_" + rp + ".mp3")
                 if (!f.exists() || f.length() < 200L) {
                     EdgeTTS.synthesizeToMp3(slide.title + ". " + slide.text, voice, rp, f)
                 }
@@ -338,13 +355,26 @@ fun VideoScreen(
             verticalArrangement = Arrangement.Center
         ) {
             if (!ttsReady && !useEdge) {
-                CircularProgressIndicator()
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    "Sprachausgabe wird vorbereitet …",
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center
-                )
+                if (ttsFailed) {
+                    Text(
+                        "Die Sprachausgabe dieses Geräts ist nicht verfügbar. " +
+                            "Installiere eine Sprachausgabe (z. B. Google-Sprachausgabe) " +
+                            "oder wähle in den Einstellungen eine kostenlose Online-Stimme.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedButton(onClick = onClose) { Text("Zurück") }
+                } else {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "Sprachausgabe wird vorbereitet …",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center
+                    )
+                }
                 return@Column
             }
 
@@ -563,8 +593,8 @@ fun VideoScreen(
                                         val rp = ratePercent(speed)
                                         slides.mapIndexed { i, s ->
                                             try {
-                                                val mp3 = File(context.cacheDir, "www_exp_" + i + "_" + rp + ".mp3")
-                                                val wav = File(context.cacheDir, "www_exp_" + i + "_" + rp + ".wav")
+                                                val mp3 = File(context.cacheDir, "www_exp_" + discovery.id + "_" + i + "_" + rp + ".mp3")
+                                                val wav = File(context.cacheDir, "www_exp_" + discovery.id + "_" + i + "_" + rp + ".wav")
                                                 if (!mp3.exists() || mp3.length() < 200L) {
                                                     EdgeTTS.synthesizeToMp3(
                                                         s.title + ". " + s.text,
@@ -601,7 +631,7 @@ fun VideoScreen(
                         }
                     }
                 },
-                enabled = !exporting
+                enabled = !exporting && !(ttsFailed && !useEdge)
             ) {
                 if (exporting) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -625,3 +655,4 @@ fun VideoScreen(
         }
     }
 }
+

@@ -66,6 +66,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import de.derdl1983.weriewas.data.Discovery
 import de.derdl1983.weriewas.data.DiscoveryStore
+import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import de.derdl1983.weriewas.util.EdgeTTS
 import de.derdl1983.weriewas.util.Images
 import kotlinx.coroutines.Dispatchers
@@ -150,6 +151,7 @@ fun ResultScreen(
     var readLoading by remember { mutableStateOf(false) }
     var readError by remember { mutableStateOf<String?>(null) }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
+    var ttsFailed by remember { mutableStateOf(false) }
     var readVoice by remember { mutableStateOf<Voice?>(null) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var playerIndex by remember { mutableIntStateOf(-1) }
@@ -168,6 +170,12 @@ fun ResultScreen(
 
     fun startOrToggleReading() {
         readError = null
+        if (!useEdge && ttsFailed) {
+            readError = "Die Sprachausgabe dieses Geräts ist nicht verfügbar. " +
+                "Wähle in den Einstellungen eine kostenlose Online-Stimme " +
+                "oder installiere eine Sprachausgabe (z. B. Google-Sprachausgabe)."
+            return
+        }
         if (!readActive) {
             readActive = true
             playing = true
@@ -191,7 +199,8 @@ fun ResultScreen(
 
     DisposableEffect(Unit) {
         var engine: TextToSpeech? = null
-        engine = TextToSpeech(context) { status ->
+        engine = try {
+            TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 engine?.let { e ->
                     e.setLanguage(Locale.GERMANY)
@@ -237,7 +246,13 @@ fun ResultScreen(
                     })
                     readVoiceReady = true
                 }
+            } else {
+                ttsFailed = true
             }
+            }
+        } catch (e: Exception) {
+            ttsFailed = true
+            null
         }
         tts = engine
         onDispose {
@@ -290,7 +305,7 @@ fun ResultScreen(
         readError = null
         try {
             val mp3 = withContext(Dispatchers.IO) {
-                val f = File(context.cacheDir, "www_read_" + readIndex + ".mp3")
+                val f = File(context.cacheDir, "www_read_" + d.id + "_" + readIndex + ".mp3")
                 if (!f.exists() || f.length() < 200L) {
                     EdgeTTS.synthesizeToMp3(section.title + ". " + section.text, edgeVoice, 0, f)
                 }
@@ -387,7 +402,10 @@ fun ResultScreen(
                 Spacer(Modifier.width(12.dp))
                 Text(
                     text = "Erkannt: " +
-                        (if (d.explanation.source == "online") "online (Mistral)" else "lokal (auf dem Gerät)"),
+                        (if (d.explanation.source == "online")
+                            "online (" + OnlineAnalyzer.label(OnlineAnalyzer.currentProvider(context)) + ")"
+                        else
+                            "lokal (auf dem Gerät)"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
@@ -637,3 +655,4 @@ private fun shareDiscovery(context: Context, d: Discovery) {
         )
     }
 }
+
