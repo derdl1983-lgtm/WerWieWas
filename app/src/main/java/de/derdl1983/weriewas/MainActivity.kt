@@ -196,7 +196,8 @@ class MainActivity : ComponentActivity() {
             is Screen.Analyze -> AnalyzeScreen(
                 imagePath = screen.path,
                 onDone = { id -> currentScreen = Screen.Result(id) },
-                onCancel = { currentScreen = Screen.Home }
+                onCancel = { currentScreen = Screen.Home },
+                onSettings = { currentScreen = Screen.Settings }
             )
             is Screen.Result -> ResultScreen(
                 discoveryId = screen.discoveryId,
@@ -217,3 +218,4 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+

@@ -134,10 +134,11 @@ fun HomeScreen(
         }
         Spacer(Modifier.height(28.dp))
         Text(
-            text = "Die Erkennung läuft komplett auf deinem Gerät – offline, kostenlos, ohne Konto.",
+            text = "Deine Fotos werden online von der KI deines gewählten Anbieters analysiert – mit deinem eigenen API-Schlüssel.",
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )
     }
 }
+

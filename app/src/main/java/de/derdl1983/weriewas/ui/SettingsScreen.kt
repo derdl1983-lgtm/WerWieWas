@@ -412,7 +412,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                         "Hier legst du fest, wie dir die KI antwortet: Zielgruppe, Vorwissen, Ton und " +
                             "Erzählstil. Zusätzlich kannst du eigene Hinweise hinterlegen " +
                             "(z. B. Interessen, gewünschte Anrede, Lieblingsthemen). " +
-                            "Gilt für die optionale Online-Tiefenanalyse.",
+                            "Gilt für jede Online-Analyse deiner Fotos.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     ProfileChoice(
@@ -496,19 +496,16 @@ fun SettingsScreen(onClose: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        "Optionale Online-Tiefenanalyse (KI)",
+                        "KI-Anbieter für die Foto-Analyse",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        "Die App erkennt Objekte standardmäßig komplett offline. " +
-                            "Wenn du möchtest, kannst du einen eigenen API-Schlüssel hinterlegen: " +
-                            "Bei unsicheren Erkennungen fragt dich die App dann pro Foto, " +
-                            "ob sie eine genauere Analyse online durchführen darf. " +
-                            "Zusätzlich findest du auf jeder Ergebnis-Seite den Button " +
-                            "\u201eTiefenanalyse online\u201c, mit dem du jede Erkennung " +
-                            "manuell von der KI ausführlich erklären lassen kannst. " +
-                            "Du kannst zwischen verschiedenen KI-Anbietern wählen.",
+                        "Die Foto-Analyse läuft ausschließlich online über den KI-Anbieter " +
+                            "deiner Wahl – mit deinem eigenen API-Schlüssel. " +
+                            "Ohne hinterlegten Schlüssel kann keine Analyse gestartet werden. " +
+                            "Vor jedem Foto stimmst du dem Versand des Fotos ausdrücklich zu. " +
+                            "Du kannst zwischen verschiedenen KI-Anbietern und Modellen wählen.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Text(
@@ -544,8 +541,11 @@ fun SettingsScreen(onClose: () -> Unit) {
                     Text(
                         when (provider) {
                             "openai" -> "Funktioniert mit jedem OpenAI-kompatiblen Dienst " +
-                                "(OpenAI, OpenRouter, Groq, lokaler Server). " +
-                                "Bei einem anderen Dienst dessen Basis-URL eintragen."
+                                "(OpenAI selbst oder ein eigener Server). " +
+                                "Bei einem anderen Dienst dessen API-Basis-URL eintragen."
+                            "openrouter" -> "OpenRouter bündelt viele Modelle (OpenAI, Google, Meta " +
+                                "und weitere) hinter einem einzigen API-Schlüssel – ideal, um " +
+                                "verschiedene Modelle auszuprobieren."
                             "gemini" -> "Google Gemini mit eigenem API-Schlüssel aus Google AI Studio. " +
                                 "Das Sprachmodell kannst du unten wählen oder frei eintragen."
                             else -> "Mistral mit Bildverständnis-Modell (Standard)."
@@ -570,9 +570,10 @@ fun SettingsScreen(onClose: () -> Unit) {
                         )
                         Text(
                             "Für OpenAI selbst dieses Feld LEER lassen. Nur bei einem anderen " +
-                                "OpenAI-kompatiblen Dienst (OpenRouter, Groq, lokaler Server) " +
+                                "OpenAI-kompatiblen Dienst (z. B. eigener oder lokaler Server) " +
                                 "dessen API-Endpunkt eintragen – das ist NICHT die Website-Adresse, " +
-                                "sondern die Server-Adresse, die meist auf /v1 endet.",
+                                "sondern die Server-Adresse, die meist auf /v1 endet. " +
+                                "OpenRouter ist eine eigene Auswahloption und braucht keine Basis-URL.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
@@ -630,11 +631,10 @@ fun SettingsScreen(onClose: () -> Unit) {
                     }
                     Text(
                         if (apiKey.isNotBlank()) {
-                            "Online-Analyse bereit: API-Schlüssel für " + OnlineAnalyzer.label(provider) + " hinterlegt."
+                            "Analyse bereit: API-Schlüssel für " + OnlineAnalyzer.label(provider) + " hinterlegt."
                         } else {
-                            "Kein API-Schlüssel hinterlegt – die Online-Analyse ist derzeit nicht möglich. " +
-                                "Die lokale Bilderkennung, die Stimmen und das Erklärvideo " +
-                                "funktionieren weiterhin komplett ohne Schlüssel."
+                            "Kein API-Schlüssel hinterlegt – ohne Schlüssel kann keine Foto-Analyse " +
+                                "gestartet werden. Stimmen und Erklärvideo funktionieren weiterhin."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
@@ -726,11 +726,10 @@ fun SettingsScreen(onClose: () -> Unit) {
                     )
                     Text(
                         "Wer Wie Was sendet ohne deine ausdrückliche Zustimmung keine Daten an Dritte. " +
-                            "Die Bilderkennung läuft lokal auf dem Gerät.\n\n" +
-                            "Fotos verlassen dein Gerät nur dann, wenn du die optionale Online-Analyse " +
-                            "aktiviert hast UND vor jedem einzelnen Foto ausdrücklich zustimmst – " +
-                            "dann nur an den von dir gewählten KI-Anbieter. " +
-                            "Der API-Schlüssel wird ausschließlich lokal gespeichert.\n\n" +
+                            "Die Foto-Analyse läuft online über den von dir gewählten KI-Anbieter.\n\n" +
+                            "Fotos verlassen dein Gerät erst, nachdem du vor jedem einzelnen Foto " +
+                            "ausdrücklich zugestimmt hast – dann nur an den von dir gewählten " +
+                            "KI-Anbieter. Der API-Schlüssel wird ausschließlich lokal gespeichert.\n\n" +
                             "Die optionalen Edge-TTS-Stimmen senden den jeweils vorzulesenden Text " +
                             "an den Microsoft-Lesedienst, um die Sprache zu erzeugen. " +
                             "Es gibt kein Tracking, keine Werbung und keine Konten. " +
@@ -863,5 +862,6 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 }
+
 
 

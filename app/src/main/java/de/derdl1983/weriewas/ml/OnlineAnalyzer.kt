@@ -14,10 +14,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Optionale Online-Tiefenanalyse über einen wählbaren KI-Anbieter
- * (Mistral, OpenAI-kompatibel oder Google Gemini).
- * Wird nur mit eigenem API-Schlüssel und nach ausdrücklicher Einwilligung
- * des Nutzers pro Foto aufgerufen.
+ * Online-Bildanalyse über einen wählbaren KI-Anbieter
+ * (Mistral, OpenAI-kompatibel, OpenRouter oder Google Gemini).
+ * Läuft ausschließlich online mit dem eigenen API-Schlüssel des Nutzers und
+ * nur nach ausdrücklicher Einwilligung pro Foto.
  */
 object OnlineAnalyzer {
 
@@ -39,35 +39,56 @@ object OnlineAnalyzer {
         val custom: String = ""
     )
 
-    val PROVIDERS = listOf("mistral", "openai", "gemini")
+    val PROVIDERS = listOf("mistral", "openai", "openrouter", "gemini")
 
     fun label(provider: String): String = when (provider) {
         "openai" -> "OpenAI-kompatibel"
+        "openrouter" -> "OpenRouter"
         "gemini" -> "Google Gemini"
         else -> "Mistral"
     }
 
     fun defaultModel(provider: String): String = when (provider) {
-        "openai" -> "gpt-4o-mini"
-        "gemini" -> "gemini-2.0-flash"
-        else -> "pixtral-12b-2409"
+        "openai" -> "gpt-6-luna"
+        "openrouter" -> "google/gemini-3.8-flash"
+        "gemini" -> "gemini-3.8-flash"
+        else -> "mistral-medium-2604"
     }
 
-    /** Gängige Sprachmodelle je Anbieter für die Schnellauswahl in den Einstellungen. */
+    /** Gängige Bildverständnis-Modelle je Anbieter für die Schnellauswahl in den Einstellungen. */
     fun suggestedModels(provider: String): List<String> = when (provider) {
-        "openai" -> listOf("gpt-4o-mini", "gpt-4o", "gpt-4.1-mini")
-        "gemini" -> listOf(
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-2.5-pro",
-            "gemini-2.0-flash-lite",
-            "gemini-1.5-flash"
+        "openai" -> listOf(
+            "gpt-6-luna",
+            "gpt-6.1-sol",
+            "gpt-6-astra",
+            "gpt-5.6-terra",
+            "gpt-5.5"
         )
-        else -> listOf("pixtral-12b-2409", "mistral-small-latest", "mistral-large-latest")
+        "openrouter" -> listOf(
+            "google/gemini-3.8-flash",
+            "google/gemini-3.6-flash",
+            "openai/gpt-6.1-sol",
+            "openai/gpt-6-luna",
+            "meta-llama/llama-4-scout"
+        )
+        "gemini" -> listOf(
+            "gemini-3.8-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-pro-preview",
+            "gemini-4-argon"
+        )
+        else -> listOf(
+            "mistral-medium-2604",
+            "mistral-large-2512",
+            "mistral-small-2506",
+            "ministral-14b-2512"
+        )
     }
 
     fun consoleUrl(provider: String): String = when (provider) {
         "openai" -> "https://platform.openai.com/api-keys"
+        "openrouter" -> "https://openrouter.ai/settings/keys"
         "gemini" -> "https://aistudio.google.com/apikey"
         else -> "https://console.mistral.ai/"
     }
@@ -134,6 +155,7 @@ object OnlineAnalyzer {
         val baseUrl = when (provider) {
             "openai" -> prefs(context).getString("ai_base_url", "")?.takeIf { it.isNotBlank() }
                 ?: "https://api.openai.com/v1"
+            "openrouter" -> "https://openrouter.ai/api/v1"
             "gemini" -> "https://generativelanguage.googleapis.com/v1beta"
             else -> "https://api.mistral.ai/v1"
         }
@@ -152,7 +174,7 @@ object OnlineAnalyzer {
 
     private fun promptFor(config: ProviderConfig): String = PROMPT + config.profilePrompt
 
-    /** Führt die Tiefenanalyse für ein lokal gespeichertes Foto mit dem gewählten Anbieter aus. */
+    /** Führt die Online-Analyse für ein gespeichertes Foto mit dem gewählten Anbieter aus. */
     suspend fun analyze(imagePath: String, config: ProviderConfig): Explanation =
         withContext(Dispatchers.IO) {
             val bytes = File(imagePath).readBytes()
@@ -174,9 +196,15 @@ object OnlineAnalyzer {
         val messages = JSONArray().put(message)
         val body = JSONObject()
             .put("model", config.model)
-            .put("temperature", 0.2)
-            .put("max_tokens", 2000)
             .put("messages", messages)
+        if (config.provider == "openai") {
+            // Aktuelle GPT-Modelle: max_completion_tokens statt max_tokens,
+            // niedrige Temperature wird nicht mehr unterstützt.
+            body.put("max_completion_tokens", 2000)
+        } else {
+            body.put("temperature", 0.2)
+            body.put("max_tokens", 2000)
+        }
         val conn = openPost(config.baseUrl + "/chat/completions", config.apiKey)
         val text = sendAndRead(conn, body.toString())
         val o = JSONObject(text)
@@ -311,3 +339,4 @@ object OnlineAnalyzer {
         )
     }
 }
+
