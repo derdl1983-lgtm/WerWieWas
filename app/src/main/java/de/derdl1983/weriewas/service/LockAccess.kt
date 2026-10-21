@@ -70,7 +70,6 @@ object LockAccess {
             .setContentIntent(pending)
             .setOngoing(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setCategory(NotificationCompat.CATEGORY_LAUNCHER)
             .build()
         nm.notify(NOTIFICATION_ID, notification)
     }
