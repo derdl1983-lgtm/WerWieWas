@@ -1,4 +1,4 @@
-package de.derdl1983.weriewas.ui
+successfully downloaded text file (SHA: ec9d263a5899a6194a9a91799ea504934deae0ea)package de.derdl1983.weriewas.ui
 
 import android.content.ActivityNotFoundException
 import android.content.ClipData
@@ -223,11 +223,23 @@ fun ResultScreen(
             TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 engine?.let { e ->
-                    e.setLanguage(Locale.GERMANY)
-                    val germanVoices = try {
-                        e.voices?.filter { it.locale.language == "de" } ?: emptyList()
+                    // Sprache der Analyse (Einstellung) –Fallback Deutsch
+                    val lang = prefs.getString("ai_language", "de") ?: "de"
+                    val locale = if (lang == "de") Locale.GERMANY else Locale.forLanguageTag(lang)
+                    e.setLanguage(locale)
+                    val langVoices = try {
+                        e.voices?.filter { it.locale.language == lang } ?: emptyList()
                     } catch (ex: Exception) {
                         emptyList<Voice>()
+                    }
+                    val germanVoices = if (langVoices.isEmpty() && lang != "de") {
+                        try {
+                            e.voices?.filter { it.locale.language == "de" } ?: emptyList()
+                        } catch (ex: Exception) {
+                            emptyList<Voice>()
+                        }
+                    } else {
+                        langVoices
                     }
                     val sorted = germanVoices.sortedBy { it.name }
                     val nameB = prefs.getString("tts_voice_b", null)
@@ -717,7 +729,10 @@ fun ResultScreen(
                                 if (config == null) {
                                     onlineError = "Kein KI-Anbieter konfiguriert. Prüfe die Einstellungen."
                                 } else {
-                                    val explanation = OnlineAnalyzer.analyze(d.imagePath, config)
+                                    val explanation = OnlineAnalyzer.analyze(
+                                        listOf(d.imagePath) + d.extraPaths,
+                                        config
+                                    )
                                     val updated = d.copy(explanation = explanation)
                                     withContext(Dispatchers.IO) {
                                         DiscoveryStore.update(context, updated)

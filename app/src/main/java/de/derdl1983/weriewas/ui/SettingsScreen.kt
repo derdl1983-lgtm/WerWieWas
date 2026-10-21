@@ -1,4 +1,4 @@
-package de.derdl1983.weriewas.ui
+successfully downloaded text file (SHA: 61cf2569f6f60c71a0ca32b15d5a1a5de1b5b750)package de.derdl1983.weriewas.ui
 
 import android.content.Context
 import android.content.Intent
@@ -126,6 +126,7 @@ fun SettingsScreen(onClose: () -> Unit) {
     var tone by rememberSaveable { mutableStateOf(prefs.getString("ai_tone", "sachlich") ?: "sachlich") }
     var role by rememberSaveable { mutableStateOf(prefs.getString("ai_role", "erzaehler") ?: "erzaehler") }
     var custom by rememberSaveable { mutableStateOf(prefs.getString("ai_custom", "") ?: "") }
+    var language by rememberSaveable { mutableStateOf(prefs.getString("ai_language", "de") ?: "de") }
 
     fun saveProfileValue(key: String, value: String) {
         prefs.edit().putString(key, value).apply()
@@ -137,12 +138,14 @@ fun SettingsScreen(onClose: () -> Unit) {
         tone = "sachlich"
         role = "erzaehler"
         custom = ""
+        language = "de"
         prefs.edit()
             .remove("ai_audience")
             .remove("ai_level")
             .remove("ai_tone")
             .remove("ai_role")
             .remove("ai_custom")
+            .remove("ai_language")
             .apply()
     }
 
@@ -433,8 +436,9 @@ fun SettingsScreen(onClose: () -> Unit) {
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        "Hier legst du fest, wie dir die KI antwortet: Zielgruppe, Vorwissen, Ton und " +
-                            "Erzählstil. Zusätzlich kannst du eigene Hinweise hinterlegen " +
+                        "Hier legst du fest, wie dir die KI antwortet: Zielgruppe, Vorwissen, Ton, " +
+                            "Erzählstil und Antwort-Sprache (z. B. für den Urlaub oder zum Sprachenlernen). " +
+                            "Zusätzlich kannst du eigene Hinweise hinterlegen " +
                             "(z. B. Interessen, gewünschte Anrede, Lieblingsthemen). " +
                             "Gilt für jede Online-Analyse deiner Fotos.",
                         style = MaterialTheme.typography.bodyMedium
@@ -490,6 +494,21 @@ fun SettingsScreen(onClose: () -> Unit) {
                     ) {
                         tone = it
                         saveProfileValue("ai_tone", it)
+                    }
+                    ProfileChoice(
+                        "Antwort-Sprache",
+                        listOf(
+                            "de" to "Deutsch",
+                            "en" to "English",
+                            "fr" to "Français (Französisch)",
+                            "es" to "Español (Spanisch)",
+                            "tr" to "Türkçe (Türkisch)",
+                            "it" to "Italiano (Italienisch)"
+                        ),
+                        language
+                    ) {
+                        language = it
+                        saveProfileValue("ai_language", it)
                     }
                     OutlinedTextField(
                         value = custom,

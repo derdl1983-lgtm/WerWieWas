@@ -1,4 +1,4 @@
-package de.derdl1983.weriewas.ml
+successfully downloaded text file (SHA: 6ca6f9450f56325102879ed06ee252a881cb86ea)package de.derdl1983.weriewas.ml
 
 import android.content.Context
 import android.util.Base64
@@ -28,7 +28,8 @@ object OnlineAnalyzer {
         val model: String,
         val baseUrl: String,
         val apiKey: String,
-        val profilePrompt: String = ""
+        val profilePrompt: String = "",
+        val language: String = "de"
     )
 
     /** Persönliches Antwortprofil des Nutzers aus den Einstellungen. */
@@ -112,6 +113,18 @@ object OnlineAnalyzer {
         "anthropic" -> "https://console.anthropic.com/"
         "xai" -> "https://console.x.ai/"
         else -> "https://console.mistral.ai/"
+    }
+
+    /** Antwort-Sprache der KI (für Prompts und Rückfragen). */
+    val LANGUAGES = listOf("de", "en", "fr", "es", "tr", "it")
+
+    fun languageName(code: String): String = when (code) {
+        "en" -> "Englisch"
+        "fr" -> "Französisch"
+        "es" -> "Spanisch"
+        "tr" -> "Türkisch"
+        "it" -> "Italienisch"
+        else -> "Deutsch"
     }
 
     private fun prefs(context: Context) =
@@ -205,26 +218,46 @@ object OnlineAnalyzer {
             model,
             baseUrl.trimEnd('/'),
             key,
-            profilePrompt(loadProfile(context))
+            profilePrompt(loadProfile(context)),
+            prefs(context).getString("ai_language", "de") ?: "de"
         )
     }
 
     fun isConfigured(context: Context): Boolean = loadConfig(context) != null
 
-    private val PROMPT = "Du bist ein hilfreicher Erklärassistent für die App „Wer Wie Was“.\nAnalysiere das Foto und beantworte: Was ist das, wie funktioniert es, wofür wird es verwendet?\nAntworte AUSSCHLIESSLICH mit einem JSON-Objekt (ohne Markdown, ohne Erklärtext) mit genau diesen Feldern:\n{\"title\": \"Kurzer deutscher Name des Objekts\", \"category\": \"Kategorie (z. B. Haushalt, Werkzeug, Elektronik, Natur, Lebensmittel, Sport, Kleidung, Verkehr, Medizin)\", \"summary\": \"2-3 Sätze: Was ist das Objekt?\", \"howItWorks\": \"2-4 Sätze: Wie funktioniert es?\", \"usage\": \"1-3 Sätze: Wofür wird es typischerweise verwendet?\", \"practical\": \"1-2 praktische Tipps für den Alltag\", \"facts\": [\"2-3 kurze interessante Fakten\"], \"safety\": \"Sicherheitshinweise (bei Lebensmitteln, Pilzen, Medikamenten, Chemikalien, Tieren, Werkzeugen: deutliche Warnung)\", \"uncertain\": true falls du dir nicht sicher bist, sonst false}\nSchreibe alles auf Deutsch."
+    private val PROMPT = "Du bist ein hilfreicher Erklärassistent für die App „Wer Wie Was“.\nAnalysiere das Foto (bei mehreren Fotos: verschiedene Ansichten desselben Objekts – nutze alle Bilder gemeinsam für eine möglichst genaue Erkennung) und beantworte: Was ist das, wie funktioniert es, wofür wird es verwendet?\nAntworte AUSSCHLIESSLICH mit einem JSON-Objekt (ohne Markdown, ohne Erklärtext) mit genau diesen Feldern:\n{\"title\": \"Kurzer Name des Objekts\", \"category\": \"Kategorie (z. B. Haushalt, Werkzeug, Elektronik, Natur, Lebensmittel, Sport, Kleidung, Verkehr, Medizin)\", \"summary\": \"2-3 Sätze: Was ist das Objekt?\", \"howItWorks\": \"2-4 Sätze: Wie funktioniert es?\", \"usage\": \"1-3 Sätze: Wofür wird es typischerweise verwendet?\", \"practical\": \"1-2 praktische Tipps für den Alltag\", \"facts\": [\"2-3 kurze interessante Fakten\"], \"safety\": \"Sicherheitshinweise (bei Lebensmitteln, Pilzen, Medikamenten, Chemikalien, Tieren, Werkzeugen: deutliche Warnung)\", \"uncertain\": true falls du dir nicht sicher bist, sonst false}"
 
-    private fun promptFor(config: ProviderConfig): String = PROMPT + config.profilePrompt
+    private fun promptFor(config: ProviderConfig): String {
+        val lang = if (config.language == "de") {
+            "Schreibe alles auf Deutsch.\n"
+        } else {
+            "Schreibe alle Inhalte auf " + languageName(config.language) +
+                " – auch den Namen des Objekts (title) in dieser Sprache.\n"
+        }
+        return PROMPT + config.profilePrompt + lang
+    }
 
-    /** Führt die Online-Analyse für ein gespeichertes Foto mit dem gewählten Anbieter aus. */
+    /** Führt die Online-Analyse für ein einzelnes Foto mit dem gewählten Anbieter aus. */
     suspend fun analyze(imagePath: String, config: ProviderConfig): Explanation =
+        analyze(listOf(imagePath), config)
+
+    /**
+     * Online-Analyse mit einem oder mehreren Fotos desselben Objekts (z. B. von
+     * verschiedenen Seiten aufgenommen). Die KI kombiniert alle Bilder für die
+     * Erkennung – das erste Foto gilt als Hauptansicht.
+     */
+    suspend fun analyze(imagePaths: List<String>, config: ProviderConfig): Explanation =
         withContext(Dispatchers.IO) {
-            val bytes = File(imagePath).readBytes()
-            val dataUrl = "data:image/jpeg;base64," +
-                Base64.encodeToString(bytes, Base64.NO_WRAP)
+            if (imagePaths.isEmpty()) throw IllegalStateException("Kein Foto für die Analyse vorhanden.")
+            val dataUrls = imagePaths.map { path ->
+                val bytes = File(path).readBytes()
+                "data:image/jpeg;base64," +
+                    Base64.encodeToString(bytes, Base64.NO_WRAP)
+            }
             val content = when (config.provider) {
-                "gemini" -> requestGemini(config, dataUrl)
-                "anthropic" -> requestAnthropic(config, dataUrl)
-                else -> requestChatCompletions(config, dataUrl)
+                "gemini" -> requestGemini(config, dataUrls)
+                "anthropic" -> requestAnthropic(config, dataUrls)
+                else -> requestChatCompletions(config, dataUrls)
             }
             parse(content)
         }
@@ -259,7 +292,8 @@ object OnlineAnalyzer {
         if (e.facts.isNotEmpty()) sb.append("Fakten: ").append(e.facts.joinToString("; ")).append("\n")
         if (e.safety.isNotBlank()) sb.append("Sicherheit: ").append(e.safety).append("\n")
         if (e.uncertain) sb.append("Hinweis: Die Erkennung des Objekts war unsicher.\n")
-        sb.append("\nBeantworte jetzt die Rückfrage des Nutzers kurz, klar und auf Deutsch (maximal etwa 120 Wörter). ")
+        sb.append("\nBeantworte jetzt die Rückfrage des Nutzers kurz und klar auf " +
+            languageName(config.language) + " (maximal etwa 120 Wörter). ")
         sb.append("Beziehe dich auf das erkannte Objekt und den bisherigen Analyse-Kontext. ")
         sb.append("Wenn eine Frage nichts mit dem Objekt zu tun hat, weise freundlich darauf hin. ")
         sb.append("Sicherheitsrelevante Warnungen (z. B. bei Lebensmitteln, Pilzen, Chemikalien) bleiben ernst.\n")
@@ -400,11 +434,13 @@ object OnlineAnalyzer {
         return sb.toString()
     }
 
-    /** Mistral und alle OpenAI-kompatiblen APIs (chat/completions, Bild als Data-URL). */
-    private fun requestChatCompletions(config: ProviderConfig, dataUrl: String): String {
+    /** Mistral und alle OpenAI-kompatiblen APIs (chat/completions, Bilder als Data-URLs). */
+    private fun requestChatCompletions(config: ProviderConfig, dataUrls: List<String>): String {
         val textPart = JSONObject().put("type", "text").put("text", promptFor(config))
-        val imagePart = JSONObject().put("type", "image_url").put("image_url", dataUrl)
-        val contentParts = JSONArray().put(textPart).put(imagePart)
+        val contentParts = JSONArray().put(textPart)
+        dataUrls.forEach { url ->
+            contentParts.put(JSONObject().put("type", "image_url").put("image_url", url))
+        }
         val message = JSONObject().put("role", "user").put("content", contentParts)
         val messages = JSONArray().put(message)
         val body = JSONObject()
@@ -433,13 +469,15 @@ object OnlineAnalyzer {
             .getString("content")
     }
 
-    /** Google Gemini (generateContent, Bild als inline_data). */
-    private fun requestGemini(config: ProviderConfig, dataUrl: String): String {
-        val base64 = dataUrl.substringAfter("base64,")
+    /** Google Gemini (generateContent, Bilder als inline_data). */
+    private fun requestGemini(config: ProviderConfig, dataUrls: List<String>): String {
         val textPart = JSONObject().put("text", promptFor(config))
-        val inlineData = JSONObject().put("mime_type", "image/jpeg").put("data", base64)
-        val imagePart = JSONObject().put("inline_data", inlineData)
-        val parts = JSONArray().put(textPart).put(imagePart)
+        val parts = JSONArray().put(textPart)
+        dataUrls.forEach { url ->
+            val base64 = url.substringAfter("base64,")
+            val inlineData = JSONObject().put("mime_type", "image/jpeg").put("data", base64)
+            parts.put(JSONObject().put("inline_data", inlineData))
+        }
         val content = JSONObject().put("parts", parts)
         val contents = JSONArray().put(content)
         val generationConfig = JSONObject().put("temperature", 0.2)
@@ -467,16 +505,18 @@ object OnlineAnalyzer {
         return sb.toString()
     }
 
-    /** Anthropic Claude (Messages API, Bild als Base64-Quelle). */
-    private fun requestAnthropic(config: ProviderConfig, dataUrl: String): String {
-        val base64 = dataUrl.substringAfter("base64,")
+    /** Anthropic Claude (Messages API, Bilder als Base64-Quellen). */
+    private fun requestAnthropic(config: ProviderConfig, dataUrls: List<String>): String {
         val textPart = JSONObject().put("type", "text").put("text", promptFor(config))
-        val source = JSONObject()
-            .put("type", "base64")
-            .put("media_type", "image/jpeg")
-            .put("data", base64)
-        val imagePart = JSONObject().put("type", "image").put("source", source)
-        val contentParts = JSONArray().put(textPart).put(imagePart)
+        val contentParts = JSONArray().put(textPart)
+        dataUrls.forEach { url ->
+            val base64 = url.substringAfter("base64,")
+            val source = JSONObject()
+                .put("type", "base64")
+                .put("media_type", "image/jpeg")
+                .put("data", base64)
+            contentParts.put(JSONObject().put("type", "image").put("source", source))
+        }
         val message = JSONObject().put("role", "user").put("content", contentParts)
         val body = JSONObject()
             .put("model", config.model)

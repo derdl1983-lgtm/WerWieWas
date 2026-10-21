@@ -1,4 +1,4 @@
-plugins {
+successfully downloaded text file (SHA: e979c10105e20359ef15fd740837185ecf6b1565)plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -29,11 +29,16 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8-Minifizierung: deutlich kleinere und schnellere APK.
+            // Signiert mit dem festen Debug-Keystore (wie die Debug-APK), damit
+            // Updates direkt über die installierte Version laufen.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

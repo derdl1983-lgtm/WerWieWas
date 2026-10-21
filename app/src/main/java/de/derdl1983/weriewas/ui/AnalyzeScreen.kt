@@ -1,6 +1,10 @@
-package de.derdl1983.weriewas.ui
+successfully downloaded text file (SHA: e50123e578870eb1c6cbe93d71e532dd333792bb)package de.derdl1983.weriewas.ui
 
 import android.content.Context
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -39,15 +44,18 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import de.derdl1983.weriewas.data.Discovery
 import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.data.Explanation
 import de.derdl1983.weriewas.data.LabelConfidence
+import de.derdl1983.weriewas.data.PendingStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import de.derdl1983.weriewas.util.Images
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 
 /**
@@ -78,6 +86,41 @@ fun AnalyzeScreen(
     }
     var autoStarted by remember { mutableStateOf(false) }
 
+    // Mehrere Fotos pro Objekt: weitere Ansichten ergänzen, die KI kombiniert alle
+    var extraPaths by remember { mutableStateOf<List<String>>(emptyList()) }
+    var pendingCapture by remember { mutableStateOf<File?>(null) }
+
+    val addPhotoLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { success ->
+        val f = pendingCapture
+        pendingCapture = null
+        if (success && f != null && f.exists()) {
+            scope.launch {
+                val path = withContext(Dispatchers.IO) {
+                    val copied = Images.copyToInternal(context, Uri.fromFile(f))
+                    f.delete()
+                    copied
+                }
+                if (path != null) {
+                    extraPaths = extraPaths + path
+                } else {
+                    Toast.makeText(context, "Foto konnte nicht gespeichert werden.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            f?.delete()
+        }
+    }
+
+    fun addPhoto() {
+        val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+        val file = File(dir, "photo_add_${System.currentTimeMillis()}.jpg")
+        pendingCapture = file
+        val uri = FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
+        runCatching { addPhotoLauncher.launch(uri) }
+    }
+
     val providerLabel = OnlineAnalyzer.label(OnlineAnalyzer.currentProvider(context))
 
     // Speichern schreibt Dateien – bewusst außerhalb des Main-Threads.
@@ -87,7 +130,8 @@ fun AnalyzeScreen(
             imagePath = imagePath,
             timestamp = System.currentTimeMillis(),
             labels = listOf(LabelConfidence(explanation.title, 1f)),
-            explanation = explanation
+            explanation = explanation,
+            extraPaths = extraPaths
         )
         withContext(Dispatchers.IO) {
             DiscoveryStore.add(context, discovery)
@@ -105,7 +149,7 @@ fun AnalyzeScreen(
                     configured = false
                     error = "Kein KI-Anbieter konfiguriert. Hinterlege in den Einstellungen einen API-Schlüssel."
                 } else {
-                    val explanation = OnlineAnalyzer.analyze(imagePath, config)
+                    val explanation = OnlineAnalyzer.analyze(listOf(imagePath) + extraPaths, config)
                     saveAndFinish(explanation)
                 }
             } catch (e: Exception) {
@@ -113,6 +157,21 @@ fun AnalyzeScreen(
             } finally {
                 running = false
             }
+        }
+    }
+
+    /** Legt die Fotos in die Warteschlange, wenn die Analyse (z. B. ohne Netz) fehlgeschlagen ist. */
+    fun saveForLater() {
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                PendingStore.add(context, listOf(imagePath) + extraPaths)
+            }
+            Toast.makeText(
+                context,
+                "Foto gemerkt – die Analyse wird später automatisch nachgeholt.",
+                Toast.LENGTH_LONG
+            ).show()
+            onCancel()
         }
     }
 
@@ -193,6 +252,34 @@ fun AnalyzeScreen(
                 Spacer(Modifier.height(24.dp))
             }
 
+            // Übersicht der weiteren Ansichten (Mehrere Fotos pro Objekt)
+            if (extraPaths.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    extraPaths.forEach { path ->
+                        val thumb = remember(path) { Images.loadThumbnail(path, 128) }
+                        thumb?.let {
+                            Image(
+                                bitmap = it.asImageBitmap(),
+                                contentDescription = "Weitere Ansicht",
+                                modifier = Modifier.size(56.dp),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "${1 + extraPaths.size} Fotos – die KI kombiniert alle Ansichten für die Erkennung.",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
             if (!configured) {
                 // ---------- Kein KI-Anbieter eingerichtet ----------
                 Text(
@@ -253,6 +340,13 @@ fun AnalyzeScreen(
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = { if (!running) saveForLater() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Für später merken – Analyse automatisch nachsenden")
+                    }
                 } else {
                     Text(
                         text = if (autoAnalyze)
@@ -265,7 +359,19 @@ fun AnalyzeScreen(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                 }
-                Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { if (!running) addPhoto() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (extraPaths.isEmpty())
+                            "Weitere Ansicht fotografieren (optional)"
+                        else
+                            "Noch ein Foto hinzufügen"
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
                         if (autoAnalyze) startOnlineAnalysis() else showConsent = true

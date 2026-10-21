@@ -1,4 +1,4 @@
-package de.derdl1983.weriewas.data
+successfully downloaded text file (SHA: 1044d7adfe0010e59c61cb52a35a475f69373b6f)package de.derdl1983.weriewas.data
 
 import android.content.Context
 import org.json.JSONArray
@@ -26,14 +26,15 @@ data class Explanation(
     val source: String // "lokal" | "online"
 )
 
-/** Eine gespeicherte Entdeckung. */
+/** Eine gespeicherte Entdeckung. imagePath ist die Hauptansicht; extraPaths enthält weitere Fotos (verschiedene Seiten). */
 data class Discovery(
     val id: String,
     val imagePath: String,
     val timestamp: Long,
     val labels: List<LabelConfidence>,
     val explanation: Explanation,
-    var isFavorite: Boolean = false
+    var isFavorite: Boolean = false,
+    val extraPaths: List<String> = emptyList()
 )
 
 /** Einfache JSON-basierte Speicherung der Entdeckungen im App-internen Speicher. */
@@ -99,13 +100,17 @@ object DiscoveryStore {
         val d = list.firstOrNull { it.id == id }
         if (d != null) {
             File(d.imagePath).delete()
+            d.extraPaths.forEach { File(it).delete() }
             saveAll(context, list.filter { it.id != id })
         }
     }
 
     fun clearAll(context: Context) {
         val list = loadAll(context)
-        list.forEach { File(it.imagePath).delete() }
+        list.forEach {
+            File(it.imagePath).delete()
+            it.extraPaths.forEach { p -> File(p).delete() }
+        }
         saveAll(context, emptyList())
     }
 
@@ -132,9 +137,12 @@ object DiscoveryStore {
             .put("links", links)
             .put("uncertain", d.explanation.uncertain)
             .put("source", d.explanation.source)
+        val extra = JSONArray()
+        d.extraPaths.forEach { extra.put(it) }
         return JSONObject()
             .put("id", d.id)
             .put("imagePath", d.imagePath)
+            .put("extraPaths", extra)
             .put("timestamp", d.timestamp)
             .put("labels", labels)
             .put("explanation", expl)
@@ -158,6 +166,9 @@ object DiscoveryStore {
             val jo = linkArray.getJSONObject(i)
             links.add(InfoLink(jo.optString("label"), jo.optString("url"), jo.optString("kind")))
         }
+        val extraPaths = mutableListOf<String>()
+        val extraArray = o.optJSONArray("extraPaths") ?: JSONArray()
+        for (i in 0 until extraArray.length()) extraPaths.add(extraArray.optString(i))
         return Discovery(
             id = o.optString("id"),
             imagePath = o.optString("imagePath"),
@@ -176,7 +187,8 @@ object DiscoveryStore {
                 uncertain = e.optBoolean("uncertain", false),
                 source = e.optString("source", "lokal")
             ),
-            isFavorite = o.optBoolean("favorite", false)
+            isFavorite = o.optBoolean("favorite", false),
+            extraPaths = extraPaths
         )
     }
 }

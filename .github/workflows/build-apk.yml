@@ -1,4 +1,4 @@
-name: Build Debug-APK
+name: Build APKs
 
 on:
   push:
@@ -38,25 +38,53 @@ jobs:
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit $status
 
-      - name: APK als Release veröffentlichen
+      - name: Release-APK bauen (R8-minifiziert, signiert)
+        id: buildrelease
+        if: steps.buildapk.outputs.status == '0'
+        continue-on-error: true
+        run: |
+          status=0
+          gradle :app:assembleRelease --stacktrace --no-daemon > release-build.log 2>&1 || status=1
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: APKs sammeln
+        if: steps.buildapk.outputs.status == '0'
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk dist/
+          fi
+
+      - name: APKs als Release veröffentlichen
         if: steps.buildapk.outputs.status == '0'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-latest
           name: Automatischer APK-Build
           body: |
-            Debug-APK aus dem aktuellen Stand von main.
+            APKs aus dem aktuellen Stand von main.
 
-            Download: app-debug.apk – auf dem Handy öffnen und installieren
+            - app-release.apk – signierte Release-Version (R8-minifiziert): kleiner & schneller, empfohlen zum Installieren
+            - app-debug.apk – Debug-Version (falls die Release-APK auf einem Gerät nicht laufen sollte)
+
+            Auf dem Handy öffnen und installieren
             ("Installation aus unbekannten Quellen" für den Browser erlauben).
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: dist/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fehler-Log ins Repository committen
-        if: steps.buildapk.outputs.status != '0'
+        if: steps.buildapk.outputs.status != '0' || steps.buildrelease.outputs.status != '0'
         run: |
-          tail -n 400 build.log > last-build-error.log
+          rm -f last-build-error.log
+          if [ "${{ steps.buildapk.outputs.status }}" != "0" ]; then
+            tail -n 400 build.log > last-build-error.log
+          fi
+          if [ "${{ steps.buildrelease.outputs.status }}" != "0" ]; then
+            tail -n 400 release-build.log >> last-build-error.log
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add last-build-error.log

@@ -1,5 +1,8 @@
-package de.derdl1983.weriewas.ui
+successfully downloaded text file (SHA: 05dddc3abaca63284d8c4c17945b95a6e05b3faa)package de.derdl1983.weriewas.ui
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
@@ -30,13 +33,17 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -47,7 +54,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import de.derdl1983.weriewas.data.Discovery
 import de.derdl1983.weriewas.data.DiscoveryStore
+import de.derdl1983.weriewas.data.LabelConfidence
+import de.derdl1983.weriewas.data.PendingStore
+import de.derdl1983.weriewas.ml.OnlineAnalyzer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.UUID
 
 /**
  * Startseite der App mit großem Kamera-Schnellstart, Galerie-, Verlauf- und
@@ -80,7 +95,68 @@ fun HomeScreen(
 
     // Mini-Statistik der bisherigen Entdeckungen
     val context = LocalContext.current
-    val stats = remember { DiscoveryStore.loadAll(context) }
+    val scope = rememberCoroutineScope()
+    var stats by remember { mutableStateOf(DiscoveryStore.loadAll(context)) }
+    var pending by remember { mutableStateOf(PendingStore.loadAll(context)) }
+    var queueRunning by remember { mutableStateOf(false) }
+    var queueMessage by remember { mutableStateOf<String?>(null) }
+
+    /** Prüft, ob aktuell eine Internetverbindung besteht. */
+    fun isOnline(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    /** Sendet alle wartenden Fotos erneut an die KI – wird automatisch beim App-Start versucht. */
+    fun processQueue() {
+        if (queueRunning || pending.isEmpty()) return
+        val config = OnlineAnalyzer.loadConfig(context) ?: return
+        queueRunning = true
+        queueMessage = null
+        scope.launch {
+            var doneCount = 0
+            try {
+                for (item in pending.toList()) {
+                    val explanation = withContext(Dispatchers.IO) {
+                        OnlineAnalyzer.analyze(item.paths, config)
+                    }
+                    val discovery = Discovery(
+                        id = UUID.randomUUID().toString(),
+                        imagePath = item.paths.first(),
+                        timestamp = System.currentTimeMillis(),
+                        labels = listOf(LabelConfidence(explanation.title, 1f)),
+                        explanation = explanation,
+                        extraPaths = item.paths.drop(1)
+                    )
+                    withContext(Dispatchers.IO) {
+                        DiscoveryStore.add(context, discovery)
+                        PendingStore.remove(context, item.id)
+                    }
+                    doneCount++
+                }
+            } catch (e: Exception) {
+                // Netz bleibt weg oder API-Fehler: Der Rest bleibt in der Warteschlange
+                queueMessage = "Nachsenden abgebrochen: " + (e.message ?: "unbekannter Fehler")
+            } finally {
+                queueRunning = false
+                pending = withContext(Dispatchers.IO) { PendingStore.loadAll(context) }
+                stats = DiscoveryStore.loadAll(context)
+                if (doneCount > 0) {
+                    queueMessage = "$doneCount gemerkte Fotos erfolgreich analysiert."
+                }
+            }
+        }
+    }
+
+    // Automatischer Versuch, sobald die Startseite offen ist und Netz da ist
+    LaunchedEffect(Unit) {
+        if (pending.isNotEmpty() && isOnline()) {
+            processQueue()
+        }
+    }
 
     // Tipp-Feedback für den großen Kamera-Button
     val interaction = remember { MutableInteractionSource() }
@@ -209,6 +285,64 @@ fun HomeScreen(
                     onClick = onSettings,
                     modifier = Modifier.weight(1f)
                 )
+            }
+
+            // Analyse-Warteschlange: gemerkte Fotos automatisch/manuell nachsenden
+            if (pending.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            "Analyse-Warteschlange",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            "${pending.size} " +
+                                (if (pending.size == 1) "Fotoset wartet" else "Fotosets warten") +
+                                " auf die Analyse – sie werden automatisch gesendet, sobald wieder Internet da ist.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                        val qm = queueMessage
+                        if (qm != null) {
+                            Text(
+                                qm,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+                        if (queueRunning) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Text(
+                                    "Analysiere gemerkte Fotos …",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        } else {
+                            Button(onClick = { processQueue() }) {
+                                Text("Jetzt erneut analysieren")
+                            }
+                        }
+                    }
+                }
             }
 
             // Mini-Statistik: Anzahl Entdeckungen + Top-Kategorien
