@@ -63,6 +63,8 @@ object VideoExporter {
     /**
      * Erstellt das Video und gibt eine Beschreibung des Speicherorts zurück.
      * onProgress wird mit (erledigte Schritte, Gesamtschritte) aufgerufen.
+     * preAudio: optional je Szene eine fertige WAV-Datei (z. B. Edge-TTS);
+     * fehlende Einträge werden über die Android-Sprachausgabe erzeugt.
      */
     fun export(
         context: Context,
@@ -70,13 +72,14 @@ object VideoExporter {
         voiceA: Voice?,
         voiceB: Voice?,
         rate: Float,
+        preAudio: List<File?>? = null,
         onProgress: (done: Int, total: Int) -> Unit
     ): String {
         if (slides.isEmpty()) throw ExportException("Keine Inhalte zum Export vorhanden.")
         val totalSteps = 3 + slides.size
         var done = 0
 
-        val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate)
+        val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, preAudio)
         done += slides.size
         onProgress(done, totalSteps)
 
@@ -123,14 +126,25 @@ object VideoExporter {
         return message
     }
 
-    /** Erzeugt je Szene eine gesprochene WAV-Datei über die Android-Sprachausgabe. */
+    /** Erzeugt je Szene eine gesprochene Tonspur – vorgefertigte Dateien haben Vorrang. */
     private fun synthesizeSlides(
         context: Context,
         slides: List<SlideData>,
         voiceA: Voice?,
         voiceB: Voice?,
-        rate: Float
+        rate: Float,
+        preAudio: List<File?>?
     ): List<SlideAudio> {
+        val provided: List<File?> = slides.mapIndexed { i, _ -> preAudio?.getOrNull(i) }
+        if (provided.isNotEmpty() && provided.all { it != null }) {
+            return provided.map { f ->
+                if (f == null) {
+                    SlideAudio(ByteArray(0), TARGET_RATE, 1)
+                } else {
+                    runCatching { parseWav(f) }.getOrElse { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
+                }
+            }
+        }
         val initLatch = CountDownLatch(1)
         val tts = TextToSpeech(context.applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) initLatch.countDown()
@@ -143,6 +157,14 @@ object VideoExporter {
             tts.setSpeechRate(rate)
             val result = mutableListOf<SlideAudio>()
             for ((index, slide) in slides.withIndex()) {
+                val pre = provided.getOrNull(index)
+                if (pre != null) {
+                    result.add(
+                        runCatching { parseWav(pre) }
+                            .getOrElse { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
+                    )
+                    continue
+                }
                 val voice = if (index % 2 == 1) (voiceB ?: voiceA) else voiceA
                 if (voice != null) {
                     tts.setVoice(voice)
@@ -362,7 +384,7 @@ object VideoExporter {
         return Pair(outFormat ?: format, samples)
     }
 
-    /** Schreibt ARGB-Pixel in die YUV-Ebenen eines Encoder-Eingabebildes. */
+    /** Schreibt ARGB-Pixel in die YUV-Ebenen eines Encoder-Eingabildes. */
     private fun fillYuv420(image: Image, argb: IntArray) {
         val planes = image.planes
         val yPlane = planes[0]
