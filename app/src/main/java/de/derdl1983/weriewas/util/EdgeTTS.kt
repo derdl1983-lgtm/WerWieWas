@@ -54,9 +54,14 @@ object EdgeTTS {
 
     private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491A6F4"
 
-    /** Zugriffs-Token der Edge-Schnittstelle (Sec-MS-GEC). */
+    /**
+     * Zugriffs-Token der Edge-Schnittstelle (Sec-MS-GEC).
+     * Der Zeitstempel muss auf 5-Minuten-Fenster (300 Sekunden) gerundet werden,
+     * sonst antwortet der Dienst mit 401 Unauthorized.
+     */
     private fun secMsGec(): String {
-        val ticks = (System.currentTimeMillis() / 1000L + 11644473600L + 5L) * 10000000L + 5000000L
+        val unix = System.currentTimeMillis() / 1000L
+        val ticks = ((unix + 11644473600L + 300L) / 300L) * 300L * 10000000L
         val digest = MessageDigest.getInstance("SHA-256")
             .digest((ticks.toString() + TRUSTED_CLIENT_TOKEN).toByteArray(Charsets.US_ASCII))
         val sb = StringBuilder()
@@ -143,7 +148,17 @@ object EdgeTTS {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    failure.set("Verbindung fehlgeschlagen: " + (t.message ?: "unbekannter Fehler"))
+                    val code = response?.code
+                    val hint = when (code) {
+                        401 -> "Zugriff verweigert (401): Token ungültig oder Uhrzeit falsch. Prüfe Datum/Uhrzeit deines Geräts und deine Internetverbindung."
+                        403 -> "Zugriff verweigert (403): Der Dienst wurde vom Anbieter gesperrt."
+                        else -> null
+                    }
+                    failure.set(
+                        "Verbindung fehlgeschlagen" +
+                            (if (code != null) " (HTTP " + code + ")" else "") +
+                            ": " + (hint ?: (t.message ?: "unbekannter Fehler"))
+                    )
                     done.countDown()
                 }
 
