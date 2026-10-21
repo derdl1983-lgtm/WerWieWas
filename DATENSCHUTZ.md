@@ -2,7 +2,7 @@
 
 ## Kurz gesagt
 
-Wer Wie Was funktioniert ohne Konto der App, ohne Tracking und ohne Werbung. Die Foto-Analyse läuft über den KI-Anbieter deiner Wahl mit deinem eigenen API-Schlüssel – Fotos werden nur versendet, wenn du vor jedem Foto ausdrücklich zustimmst.
+Wer Wie Was funktioniert ohne Konto der App, ohne Tracking und ohne Werbung. Die Foto-Analyse läuft über den KI-Anbieter deiner Wahl mit deinem eigenen API-Schlüssel – Fotos werden standardmäßig nur versendet, wenn du vor jedem Foto ausdrücklich zustimmst; optional kannst du die „Direktanalyse ohne Rückfrage“ aktivieren, sodass die Analyse direkt nach dem Foto startet.
 
 ## Was wo gespeichert wird
 
@@ -19,8 +19,9 @@ Deinstallieren der App entfernt alle Daten endgültig.
 
 Die Analyse läuft ausschließlich online über den KI-Anbieter, den du in den Einstellungen wählst (Mistral, OpenAI-kompatibler Dienst, OpenRouter, Google Gemini, Anthropic Claude oder xAI Grok):
 
-- Vor jedem Foto stimmst du dem Versand ausdrücklich zu. Ohne deine Bestätigung wird kein Foto übertragen.
-- Das Foto wird einmalig direkt über eine HTTPS-Verbindung an die API des gewählten Anbieters gesendet (z. B. `api.mistral.ai`, `api.openai.com`, `openrouter.ai`, `generativelanguage.googleapis.com`, `api.anthropic.com`, `api.x.ai`); es gibt keinen weiteren Server der App.
+- Standardmäßig stimmst du dem Versand vor jedem einzelnen Foto ausdrücklich zu. Ohne deine Bestätigung wird kein Foto übertragen.
+- Optional kannst du in den Einstellungen die **„Direktanalyse ohne Rückfrage“** aktivieren: Dann wird jedes neu aufgenommene oder gewählte Foto automatisch sofort an den gewählten KI-Anbieter übertragen, ohne separate Rückfrage. Die Einstellung kannst du jederzeit wieder deaktivieren.
+- Das Foto wird direkt über eine HTTPS-Verbindung an die API des gewählten Anbieters gesendet (z. B. `api.mistral.ai`, `api.openai.com`, `openrouter.ai`, `generativelanguage.googleapis.com`, `api.anthropic.com`, `api.x.ai`); es gibt keinen weiteren Server der App.
 - Die Server der Anbieter unterliegen deren Datenschutzerklärungen.
 - Der API-Schlüssel wird ausschließlich im Gerät gespeichert und direkt an den Anbieter übertragen.
 
@@ -42,4 +43,5 @@ Bei beiden Diensten handelt es sich um offene APIs ohne API-Schlüssel und ohne 
 ## Keine Datenweitergabe
 
 Die App enthält keine Analyse-SDKs, keine Werbung und keine Crash-Reporting-Dienste von Drittanbietern. Der Absturz-Protokollordner (für „Fehlerbericht teilen“) bleibt ausschließlich auf dem Gerät.
+
 

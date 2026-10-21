@@ -31,6 +31,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -95,6 +96,10 @@ fun SettingsScreen(onClose: () -> Unit) {
     var baseUrl by rememberSaveable { mutableStateOf(prefs.getString("ai_base_url", "") ?: "") }
     var apiKey by rememberSaveable { mutableStateOf(OnlineAnalyzer.apiKeyFor(context, provider)) }
     var showClear by remember { mutableStateOf(false) }
+
+    // Direktanalyse ohne Rückfrage
+    var autoAnalyze by rememberSaveable { mutableStateOf(prefs.getBoolean("auto_analyze", false)) }
+    var showAutoDialog by remember { mutableStateOf(false) }
 
     // KI-Profil & Antwortstil
     var audience by rememberSaveable { mutableStateOf(prefs.getString("ai_audience", "all") ?: "all") }
@@ -504,7 +509,8 @@ fun SettingsScreen(onClose: () -> Unit) {
                         "Die Foto-Analyse läuft ausschließlich online über den KI-Anbieter " +
                             "deiner Wahl – mit deinem eigenen API-Schlüssel. " +
                             "Ohne hinterlegten Schlüssel kann keine Analyse gestartet werden. " +
-                            "Vor jedem Foto stimmst du dem Versand des Fotos ausdrücklich zu. " +
+                            "Standardmäßig stimmst du dem Foto-Versand vor jedem Foto ausdrücklich zu; " +
+                            "über die „Direktanalyse ohne Rückfrage“ weiter unten kannst du das Abschalten. " +
                             "Du kannst zwischen verschiedenen KI-Anbietern und Modellen wählen.",
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -657,6 +663,59 @@ fun SettingsScreen(onClose: () -> Unit) {
                 }
             }
 
+            // ---------- Direktanalyse ohne Rückfrage ----------
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Analyse-Start",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "Standardmäßig fragt die App vor jedem Foto nach, ob es online analysiert " +
+                            "werden darf. Aktiviere die Direktanalyse, um die Online-Analyse " +
+                            "sofort nach dem Fotografieren oder der Bildauswahl zu starten – " +
+                            "ohne zusätzlichen Bestätigungsdialog.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Direktanalyse ohne Rückfrage",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                if (autoAnalyze)
+                                    "Aktiv: Jedes neue Foto wird sofort online analysiert."
+                                else
+                                    "Aus: Vor jedem Foto wirst du gefragt.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                        Switch(
+                            checked = autoAnalyze,
+                            onCheckedChange = { wanted ->
+                                if (wanted) {
+                                    showAutoDialog = true
+                                } else {
+                                    autoAnalyze = false
+                                    prefs.edit().putBoolean("auto_analyze", false).apply()
+                                    Toast.makeText(context, "Direktanalyse deaktiviert.", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -730,11 +789,13 @@ fun SettingsScreen(onClose: () -> Unit) {
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        "Wer Wie Was sendet ohne deine ausdrückliche Zustimmung keine Daten an Dritte. " +
+                        "Wer Wie Was sendet ohne deine Zustimmung keine Daten an Dritte. " +
                             "Die Foto-Analyse läuft online über den von dir gewählten KI-Anbieter.\n\n" +
-                            "Fotos verlassen dein Gerät erst, nachdem du vor jedem einzelnen Foto " +
-                            "ausdrücklich zugestimmt hast – dann nur an den von dir gewählten " +
-                            "KI-Anbieter. Der API-Schlüssel wird ausschließlich lokal gespeichert.\n\n" +
+                            "Standardmäßig verlassen Fotos dein Gerät erst, nachdem du vor jedem " +
+                            "einzelnen Foto ausdrücklich zugestimmt hast. Hast du die " +
+                            "„Direktanalyse ohne Rückfrage“ aktiviert, wird jedes neue Foto " +
+                            "sofort automatisch an den gewählten KI-Anbieter übertragen. " +
+                            "Der API-Schlüssel wird ausschließlich lokal gespeichert.\n\n" +
                             "Die optionalen Edge-TTS-Stimmen senden den jeweils vorzulesenden Text " +
                             "an den Microsoft-Lesedienst, um die Sprache zu erzeugen. " +
                             "Es gibt kein Tracking, keine Werbung und keine Konten. " +
@@ -847,6 +908,34 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 
+    if (showAutoDialog) {
+        AlertDialog(
+            onDismissRequest = { showAutoDialog = false },
+            title = { Text("Direktanalyse aktivieren?") },
+            text = {
+                Text(
+                    "Künftig wird jedes aufgenommene oder gewählte Foto sofort und ohne Rückfrage " +
+                        "an den KI-Anbieter " + OnlineAnalyzer.label(OnlineAnalyzer.currentProvider(context)) +
+                        " gesendet und mit deinem API-Schlüssel analysiert.\n\n" +
+                        "Du kannst die Direktanalyse hier jederzeit wieder ausschalten."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        autoAnalyze = true
+                        prefs.edit().putBoolean("auto_analyze", true).apply()
+                        showAutoDialog = false
+                        Toast.makeText(context, "Direktanalyse aktiviert.", Toast.LENGTH_SHORT).show()
+                    }
+                ) { Text("Aktivieren") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAutoDialog = false }) { Text("Abbrechen") }
+            }
+        )
+    }
+
     if (showClear) {
         AlertDialog(
             onDismissRequest = { showClear = false },
@@ -867,6 +956,7 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 }
+
 
 
 

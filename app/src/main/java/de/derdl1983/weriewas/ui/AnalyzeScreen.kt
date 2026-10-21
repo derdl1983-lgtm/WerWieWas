@@ -1,7 +1,10 @@
 package de.derdl1983.weriewas.ui
 
+import android.content.Context
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,6 +25,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,6 +33,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -49,6 +54,8 @@ import java.util.UUID
  * Analyse-Screen: analysiert das Foto ausschließlich online mit dem in den
  * Einstellungen gewählten KI-Anbieter (eigener API-Schlüssel des Nutzers).
  * Ohne konfigurierten Anbieter wird zum Einrichten der Einstellungen geführt.
+ * Ist in den Einstellungen die „Direktanalyse ohne Rückfrage“ aktiviert,
+ * startet die Analyse automatisch, sobald das Foto ankommt.
  */
 @Composable
 fun AnalyzeScreen(
@@ -65,6 +72,11 @@ fun AnalyzeScreen(
     var showConsent by remember { mutableStateOf(false) }
     var running by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val autoAnalyze = remember {
+        context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getBoolean("auto_analyze", false)
+    }
+    var autoStarted by remember { mutableStateOf(false) }
 
     val providerLabel = OnlineAnalyzer.label(OnlineAnalyzer.currentProvider(context))
 
@@ -104,6 +116,14 @@ fun AnalyzeScreen(
         }
     }
 
+    // Direktanalyse: ohne Rückfrage automatisch starten.
+    LaunchedEffect(configured) {
+        if (configured && autoAnalyze && !autoStarted && !running && error == null) {
+            autoStarted = true
+            startOnlineAnalysis()
+        }
+    }
+
     if (showConsent) {
         AlertDialog(
             onDismissRequest = { if (!running) showConsent = false },
@@ -113,7 +133,9 @@ fun AnalyzeScreen(
                     "Das Foto wird einmalig an den in den Einstellungen gewählten " +
                         "KI-Anbieter ($providerLabel) gesendet und mit deinem eigenen " +
                         "API-Schlüssel analysiert.\n\n" +
-                        "Andere Daten verlassen dein Gerät nicht."
+                        "Andere Daten verlassen dein Gerät nicht.\n\n" +
+                        "Tipp: In den Einstellungen kannst du die „Direktanalyse ohne Rückfrage“ " +
+                        "aktivieren – dann startet die Analyse direkt nach dem Foto."
                 )
             },
             confirmButton = {
@@ -133,106 +155,125 @@ fun AnalyzeScreen(
     }
 
     val message = error
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        bitmap?.let {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Image(
-                    bitmap = it.asImageBitmap(),
-                    contentDescription = "Aufgenommenes Foto",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(260.dp),
-                    contentScale = ContentScale.Crop
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        MaterialTheme.colorScheme.background
+                    )
                 )
-            }
-            Spacer(Modifier.height(24.dp))
-        }
-
-        if (!configured) {
-            // ---------- Kein KI-Anbieter eingerichtet ----------
-            Text(
-                text = "Online-Analyse erforderlich",
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center
             )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Die Foto-Analyse läuft ausschließlich online über einen " +
-                    "KI-Anbieter mit deinem eigenen API-Schlüssel. " +
-                    "Hinterlege in den Einstellungen einen Anbieter und einen API-Schlüssel, " +
-                    "um Fotos analysieren zu können.",
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-            )
-            Spacer(Modifier.height(24.dp))
-            Button(
-                onClick = onSettings,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Einstellungen öffnen") }
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = onCancel,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Zurück") }
-        } else if (running) {
-            // ---------- Analyse läuft ----------
-            CircularProgressIndicator()
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = "Analysiere dein Foto …",
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Wird online von $providerLabel analysiert.",
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-            )
-        } else {
-            // ---------- Bereit zur Analyse ----------
-            if (message != null) {
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            bitmap?.let {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer
-                    )
+                    shape = RoundedCornerShape(24.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
                 ) {
-                    Text(
-                        text = message,
-                        modifier = Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.bodyMedium
+                    Image(
+                        bitmap = it.asImageBitmap(),
+                        contentDescription = "Aufgenommenes Foto",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(260.dp),
+                        contentScale = ContentScale.Crop
                     )
                 }
                 Spacer(Modifier.height(24.dp))
-            } else {
+            }
+
+            if (!configured) {
+                // ---------- Kein KI-Anbieter eingerichtet ----------
                 Text(
-                    text = "Das Foto wird von $providerLabel analysiert – " +
-                        "mit deinem eigenen API-Schlüssel.",
+                    text = "Online-Analyse erforderlich",
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Die Foto-Analyse läuft ausschließlich online über einen " +
+                        "KI-Anbieter mit deinem eigenen API-Schlüssel. " +
+                        "Hinterlege in den Einstellungen einen Anbieter und einen API-Schlüssel, " +
+                        "um Fotos analysieren zu können.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+                Spacer(Modifier.height(24.dp))
+                Button(
+                    onClick = onSettings,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Einstellungen öffnen") }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Zurück") }
+            } else if (running) {
+                // ---------- Analyse läuft ----------
+                CircularProgressIndicator(strokeWidth = 5.dp)
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = "Analysiere dein Foto …",
+                    style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Wird online von $providerLabel analysiert.",
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
-                Spacer(Modifier.height(24.dp))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { showConsent = true }) {
-                    Text("Online analysieren")
+            } else {
+                // ---------- Bereit zur Analyse ----------
+                if (message != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    ) {
+                        Text(
+                            text = message,
+                            modifier = Modifier.padding(16.dp),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else {
+                    Text(
+                        text = if (autoAnalyze)
+                            "Direktanalyse aktiv – das Foto wird sofort von $providerLabel analysiert."
+                        else
+                            "Das Foto wird von $providerLabel analysiert – " +
+                                "mit deinem eigenen API-Schlüssel.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
                 }
-                OutlinedButton(onClick = onCancel) { Text("Abbrechen") }
+                Spacer(Modifier.height(24.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        if (autoAnalyze) startOnlineAnalysis() else showConsent = true
+                    }) {
+                        Text("Online analysieren")
+                    }
+                    OutlinedButton(onClick = onCancel) { Text("Abbrechen") }
+                }
             }
         }
     }

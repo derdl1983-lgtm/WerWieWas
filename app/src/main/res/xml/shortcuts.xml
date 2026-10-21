@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Schnellfoto: App-Symbol gedrückt halten → direkt in die Kamera -->
+    <shortcut
+        android:shortcutId="quick_photo"
+        android:enabled="true"
+        android:icon="@drawable/ic_tile"
+        android:shortcutShortLabel="@string/shortcut_camera_short"
+        android:shortcutLongLabel="@string/shortcut_camera_long">
+        <intent
+            android:action="de.derdl1983.weriewas.OPEN_CAMERA"
+            android:targetPackage="de.derdl1983.weriewas"
+            android:targetClass="de.derdl1983.weriewas.MainActivity" />
+    </shortcut>
+
+    <!-- Schnellstart Galerie: App-Symbol gedrückt halten → Fotoauswahl -->
+    <shortcut
+        android:shortcutId="quick_gallery"
+        android:enabled="true"
+        android:icon="@drawable/ic_tile"
+        android:shortcutShortLabel="@string/shortcut_gallery_short"
+        android:shortcutLongLabel="@string/shortcut_gallery_long">
+        <intent
+            android:action="de.derdl1983.weriewas.OPEN_GALLERY"
+            android:targetPackage="de.derdl1983.weriewas"
+            android:targetClass="de.derdl1983.weriewas.MainActivity" />
+    </shortcut>
+</shortcuts>

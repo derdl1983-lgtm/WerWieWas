@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_OPEN_CAMERA = "de.derdl1983.weriewas.OPEN_CAMERA"
+        const val ACTION_OPEN_GALLERY = "de.derdl1983.weriewas.OPEN_GALLERY"
         private const val PROVIDER_SUFFIX = ".fileprovider"
         private const val KEY_SCREEN = "screen"
         private const val KEY_ARG = "screen_arg"
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
 
     private var currentScreen by mutableStateOf<Screen>(Screen.Home)
     private var autoOpenCamera by mutableStateOf(false)
+    private var autoOpenGallery by mutableStateOf(false)
     private var lastPhotoFile: File? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,12 +83,19 @@ class MainActivity : ComponentActivity() {
         handleLaunchIntent(intent)
     }
 
-    /** Wertet den Start-Intent (z. B. von der Kachel) genau einmal aus. */
+    /** Wertet den Start-Intent (Kachel oder App-Symbol-Shortcut) genau einmal aus. */
     private fun handleLaunchIntent(intent: Intent?) {
-        if (intent?.action == ACTION_OPEN_CAMERA) {
-            intent.action = null // verbraucht, damit eine Rotation die Kamera nicht erneut öffnet
-            currentScreen = Screen.Home
-            autoOpenCamera = true
+        when (intent?.action) {
+            ACTION_OPEN_CAMERA -> {
+                intent.action = null // verbraucht, damit eine Rotation die Kamera nicht erneut öffnet
+                currentScreen = Screen.Home
+                autoOpenCamera = true
+            }
+            ACTION_OPEN_GALLERY -> {
+                intent.action = null
+                currentScreen = Screen.Home
+                autoOpenGallery = true
+            }
         }
     }
 
@@ -188,6 +197,8 @@ class MainActivity : ComponentActivity() {
             Screen.Home -> HomeScreen(
                 autoOpenCamera = autoOpenCamera,
                 onAutoOpened = { autoOpenCamera = false },
+                autoOpenGallery = autoOpenGallery,
+                onAutoGalleryOpened = { autoOpenGallery = false },
                 onCamera = { openCamera() },
                 onGallery = { openGallery() },
                 onHistory = { currentScreen = Screen.History },
@@ -218,4 +229,5 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
 

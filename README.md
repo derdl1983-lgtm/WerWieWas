@@ -5,14 +5,16 @@ Foto machen → verstehen: **Wer Wie Was** analysiert Objekte mit einer KI deine
 ## Funktionen
 
 - **Foto oder Galerie** – Objekt ablichten oder ein vorhandenes Foto analysieren
+- **Schnellfoto über mehrere Wege** – großer Kamera-Button auf der Startseite, App-Symbol gedrückt halten (Shortcuts „Foto machen“ und „Galerie“) und die Schnelleinstellungs-Kachel öffnen die App direkt im Fotografier- bzw. Bildauswahl-Modus
+- **Direktanalyse ohne Rückfrage** – optional in den Einstellungen aktivierbar: Die Online-Analyse startet sofort nach dem Foto, ohne zusätzlichen Bestätigungsdialog
 - **KI-Analyse online** – das Foto wird mit deinem eigenen API-Schlüssel von der KI analysiert; unterstützt werden Mistral, OpenAI-kompatible Dienste, OpenRouter, Google Gemini, Anthropic Claude und xAI Grok
 - **Ehrliche Unsicherheit** – ist sich die KI nicht sicher, sagt die App das deutlich; bei kritischen Objekten (Pilze, Medikamente, Werkzeuge) wird nie eine Gewissheit behauptet
 - **Erklärung in vier Fragen** – Was ist das? Wie funktioniert es? Wofür wird es verwendet? Plus Fakten und Sicherheitshinweise
 - **Erklärvideo** – Foto, Textkarten und passende Online-Themenbilder (frei lizenziert, aus Wikimedia Commons/Openverse), vorgelesen über kostenlose Online-Stimmen oder die Android-Sprachausgabe
 - **Verlauf & Favoriten** – alle Entdeckungen bleiben auf dem Gerät
 - **Echte Links** – Wikipedia (per API direkt auf den passenden Artikel aufgelöst), YouTube-Suche, DuckDuckGo und Amazon-Suche; Suchanfragen werden aus dem Kernthema und Schlüsselwörtern der gesamten Analyse gebaut
-- **Kamera-Schnellzugriff** – Schnelleinstellungs-Kachel öffnet die App direkt in der Kamera
-- **Datenschutz zuerst** – Foto-Versand nur nach ausdrücklicher Bestätigung pro Foto, mit eigenem API-Schlüssel, ohne Zwischenserver
+- **Moderne Oberfläche** – Material-3-Design mit Farbverlauf, animiertem Kamera-Button und Karten-Layout für hellen und dunklen Modus
+- **Datenschutz zuerst** – Foto-Versand standardmäßig nur nach ausdrücklicher Bestätigung pro Foto (optional Direktanalyse ohne Rückfrage), mit eigenem API-Schlüssel, ohne Zwischenserver
 
 ## APK beziehen (nur mit dem Handy)
 
@@ -33,7 +35,7 @@ Details zur Installation und Einrichtung: siehe `EINRICHTUNG.md`.
 app/
   src/main/
     java/de/derdl1983/weriewas/
-      MainActivity.kt        Navigation, Kamera, Galerie
+      MainActivity.kt        Navigation, Kamera, Galerie, Shortcuts
       data/                  Entdeckungs-Modell, Link-Builder für Weiterbildung
       ml/                    OnlineAnalyzer: KI-Analyse (Mistral, OpenAI-kompatibel,
                              OpenRouter, Gemini, Claude, Grok)
@@ -41,7 +43,7 @@ app/
       ui/                    Compose-Screens (Start, Analyse, Ergebnis, Verlauf, Video, Einstellungen)
       util/                  Edge-TTS-Stimmen, Bild-/Video-Hilfsfunktionen,
                              Online-Bildersuche (Wikimedia Commons/Openverse)
-    res/                     Icons, Strings, Themes
+    res/                     Icons, Strings, Themes, App-Shortcuts
 .github/workflows/build-apk.yml   CI: baut die APK und veröffentlicht sie als Release
 ```
 
@@ -62,4 +64,3 @@ app/
 - `DATENSCHUTZ.md` – welche Daten wo gespeichert werden
 - `KOSTEN.md` – was die App kostet (Spoiler: die App selbst 0 €)
 - `ROADMAP.md` – was fertig ist und was noch kommt
-

@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Nur Internet für die OPTIONALE Online-Analyse; Erkennung läuft komplett lokal. -->
+    <!-- Internet für die Online-Analyse, die Online-Stimmen (Edge-TTS),
+         die Themenbildersuche (Wikimedia/Openverse) und die Wikipedia-Links. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
@@ -26,6 +27,15 @@
                 <action android:name="de.derdl1983.weriewas.OPEN_CAMERA" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!-- Einstieg über App-Symbol-Shortcut "Galerie" -->
+            <intent-filter>
+                <action android:name="de.derdl1983.weriewas.OPEN_GALLERY" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <!-- Long-Press-Shortcuts auf dem App-Symbol -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <service
@@ -50,3 +60,4 @@
         </provider>
     </application>
 </manifest>
+

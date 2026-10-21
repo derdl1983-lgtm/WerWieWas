@@ -1,4 +1,8 @@
 <resources>
     <string name="app_name">Wer Wie Was</string>
     <string name="tile_label">Wer Wie Was</string>
+    <string name="shortcut_camera_short">Foto machen</string>
+    <string name="shortcut_camera_long">Schnellfoto machen</string>
+    <string name="shortcut_gallery_short">Galerie</string>
+    <string name="shortcut_gallery_long">Foto aus Galerie analysieren</string>
 </resources>
