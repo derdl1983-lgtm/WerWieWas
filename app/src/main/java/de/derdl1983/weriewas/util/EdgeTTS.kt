@@ -40,6 +40,11 @@ import java.util.concurrent.atomic.AtomicReference
  * (rany2/edge-tts, src/edge_tts/drm.py) validiert; Handshake-URL, Header und
  * Cookie entsprechen exakt dem echten Edge-Browser (communicate.py). Notfalls
  * wird die Server-Zeit zusätzlich über den Stimmlisten-Endpunkt ermittelt.
+ *
+ * Endpunkt-Wechsel Oktober 2026: Die Synthese läuft primär über den neuen
+ * Host api.msedgeservices.com (Token als Ocp-Apim-Subscription-Key,
+ * rany2/edge-tts PR #491); der alte speech.platform.bing.com-Host wird als
+ * Fallback weiter versucht. Die Stimmliste antwortet noch auf dem alten Host.
  */
 object EdgeTTS {
 
@@ -83,6 +88,16 @@ object EdgeTTS {
     private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491A6F4"
     private const val WIN_EPOCH = 11644473600L
     private const val CHROMIUM_FULL_VERSION = "143.0.3650.75"
+
+    // Seit Oktober 2026 (Edge 155) lehnt der alte speech.platform.bing.com-Host
+    // den Synthese-WebSocket in vielen Regionen mit 401/403 ab; Edge synthetisiert
+    // jetzt über api.msedgeservices.com, der dasselbe Token als
+    // Ocp-Apim-Subscription-Key akzeptiert (rany2/edge-tts PR #491). Der alte
+    // Host bleibt als Fallback für Regionen vor der Umstellung.
+    private const val WSS_URL_NEW =
+        "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
+    private const val WSS_URL_LEGACY =
+        "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
 
     // ---------- Konstanten des Sec-MS-GEC-v2-Verfahrens ----------
     // Wichtig: Alle Hex-Konstanten werden über toLong(16) geparst.
@@ -393,30 +408,53 @@ object EdgeTTS {
      * Synthetisiert Text zu einer MP3-Datei (24 kHz, 48 kbit/s, mono).
      * Blockierend – im Hintergrund-Thread aufrufen. ratePercent: -50 bis +100.
      * Bei 401/403 wird die Geräte-Uhr anhand der Server-Zeit korrigiert und
-     * automatisch ein zweiter Versuch gestartet.
+     * mehrfach erneut versucht; zusätzlich läuft nach dem neuen Host
+     * (api.msedgeservices.com) immer noch der alte Host als Fallback.
      */
     fun synthesizeToMp3(text: String, voice: String, ratePercent: Int, outFile: File): File {
-        var skew = 0L
-        var last: SkewException? = null
-        for (attempt in 0 until 3) {
-            try {
-                return synthesizeOnce(text, voice, ratePercent, outFile, skew)
-            } catch (e: SkewException) {
-                skew = e.skewSeconds
-                last = e
+        var lastSkew: SkewException? = null
+        var lastHard: IOException? = null
+        // Erst der neue Host (api.msedgeservices.com), danach der alte:
+        // Microsoft rollt die Umstellung regional aus, je nach Region
+        // verweigert einer der beiden Hosts den Handshake (401/403).
+        for (useLegacy in booleanArrayOf(false, true)) {
+            var skew = 0L
+            for (attempt in 0 until 3) {
+                try {
+                    return synthesizeOnce(text, voice, ratePercent, outFile, skew, useLegacy)
+                } catch (e: SkewException) {
+                    skew = e.skewSeconds
+                    lastSkew = e
+                } catch (e: IOException) {
+                    // Ohne nutzbaren Skew (Netzwerk-Fehler) → anderen Host probieren
+                    lastHard = e
+                    break
+                }
             }
         }
-        throw IOException("Sprachsynthese fehlgeschlagen: " + (last?.message ?: "unbekannter Fehler"))
+        throw IOException(
+            "Sprachsynthese fehlgeschlagen: " +
+                (lastHard?.message ?: lastSkew?.message ?: "unbekannter Fehler")
+        )
     }
 
-    private fun synthesizeOnce(text: String, voice: String, ratePercent: Int, outFile: File, skewSeconds: Long): File {
-        // Reihenfolge wie in der Referenz (communicate.py): TrustedClientToken,
-        // ConnectionId, Sec-MS-GEC, Sec-MS-GEC-Version.
-        val url = ("wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
-            + "?TrustedClientToken=" + TRUSTED_CLIENT_TOKEN
-            + "&ConnectionId=" + requestId()
-            + "&Sec-MS-GEC=" + secMsGecV2(skewSeconds)
-            + "&Sec-MS-GEC-Version=2-" + CHROMIUM_FULL_VERSION)
+    private fun synthesizeOnce(text: String, voice: String, ratePercent: Int, outFile: File, skewSeconds: Long, useLegacyHost: Boolean): File {
+        // Neuer Host: Token als Ocp-Apim-Subscription-Key (Referenz: rany2/edge-tts
+        // PR #491, constants.py/communicate.py). Alter Host: TrustedClientToken.
+        val secMsGec = secMsGecV2(skewSeconds)
+        val url = if (useLegacyHost) (
+            WSS_URL_LEGACY
+                + "?TrustedClientToken=" + TRUSTED_CLIENT_TOKEN
+                + "&Sec-MS-GEC=" + secMsGec
+                + "&Sec-MS-GEC-Version=2-" + CHROMIUM_FULL_VERSION
+                + "&ConnectionId=" + requestId()
+        ) else (
+            WSS_URL_NEW
+                + "?Ocp-Apim-Subscription-Key=" + TRUSTED_CLIENT_TOKEN
+                + "&Sec-MS-GEC=" + secMsGec
+                + "&Sec-MS-GEC-Version=2-" + CHROMIUM_FULL_VERSION
+                + "&ConnectionId=" + requestId()
+        )
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
@@ -622,6 +660,7 @@ object EdgeTTS {
         }
     }
 }
+
 
 
 

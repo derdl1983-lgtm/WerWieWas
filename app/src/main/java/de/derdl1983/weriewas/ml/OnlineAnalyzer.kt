@@ -138,9 +138,9 @@ object OnlineAnalyzer {
     private fun profilePrompt(profile: ProfileConfig): String {
         val sb = StringBuilder()
         when (profile.role) {
-            "detektiv" -> sb.append("Erzähle im Stil eines neugierigen Detektivs, der das Rätsel um das Objekt löst: spannend, aber immer korrekt.\n")
-            "professor" -> sb.append("Erzähle im Stil eines freundlichen Professors: fundiert, gern mit kleinen Fachbegriffen, die du sofort erklärst.\n")
-            "freund" -> sb.append("Erzähle so, wie ein guter Freund es erklären würde: locker, persönlich mit „du“ und Alltagsbeispielen.\n")
+            "detektiv" -> sb.append("Erzähle im Stil eines neugierigen Detektivs, der das Rätsel um das Objekt knackt: baue Spannung auf, tue so, als würdest du Ermittlungsdaten sammeln („Am Tatort fallen mir sofort drei Dinge auf …“), und löse den Fall am Ende auf. Fakten bleiben immer korrekt.\n")
+            "professor" -> sb.append("Erzähle im Stil eines begeisterten Professors, der von seinem Lieblingsthema brennt: mit Feuereifer, kleinen Fachbegriffen, die du sofort erklärst, und mindestens einem „Aha!“-Moment pro Abschnitt.\n")
+            "freund" -> sb.append("Erzähle so, wie dein bester Freund beim Kaffee erzählen würde: locker, persönlich mit „du“, Alltagsbeispielen und echtem Enthusiasmus.\n")
         }
         when (profile.audience) {
             "kind" -> sb.append("Zielgruppe: Kinder von 8 bis 12 Jahren. Nutze kurze, einfache Sätze und viele Alltagsbeispiele.\n")
@@ -154,9 +154,16 @@ object OnlineAnalyzer {
             else -> sb.append("Vorwissen: Laie. Erkläre alles Schritt für Schritt ohne Vorwissen.\n")
         }
         when (profile.tone) {
-            "lustig" -> sb.append("Ton: humorvoll und mit Charme – aber immer sachlich korrekt.\n")
-            "kurz" -> sb.append("Ton: kurz und knackig, keine überflüssigen Wörter.\n")
-            "ausfuehrlich" -> sb.append("Ton: ausführlich und gründlich, mit Beispielen.\n")
+            "lustig" -> sb.append(
+                "Ton: RICHTIG lustig – schreibe wie ein Comedy-Autor! Übertreib spaßeshalber, " +
+                    "nutze überraschende Vergleiche („dieser Toaster brüllt wie ein U-Boot beim Frühsport“), " +
+                    "freche Alltagsbeobachtungen, Augenzwinkern und Pointen mit Paukenschlag. " +
+                    "Baue in JEDEM Abschnitt mindestens einen echten Gag ein, gern mit rhetorischen Fragen, " +
+                    "Komik-Pausen und Wortspielen. Wichtig: Die Fakten bleiben trotzdem sauber korrekt, " +
+                    "und bei Sicherheitshinweisen wird ernst gewarnt – dort KEIN Witz.\n"
+            )
+            "kurz" -> sb.append("Ton: knackig wie eine Schlagzeile – kurze Sätze, null Füllwörter, jedes Wort muss sich seinen Platz verdienen.\n")
+            "ausfuehrlich" -> sb.append("Ton: ausführlich und gründlich – greifbare Beispiele, echte Zusammenhänge, auch Details, die sonst unter den Tisch fallen.\n")
             else -> sb.append("Ton: sachlich und freundlich.\n")
         }
         if (profile.custom.isNotBlank()) {
@@ -407,6 +414,7 @@ object OnlineAnalyzer {
         return base.copy(links = KnowledgeBase.buildPublicLinks(base))
     }
 }
+
 
 
 
