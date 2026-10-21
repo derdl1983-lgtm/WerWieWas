@@ -27,14 +27,20 @@
 - Verständliche Fehlermeldungen bei 401/404/429/5xx der Anbieter-APIs [erledigt]
 - Frühere lokale ML-Kit-Erkennung und kuratierte Offline-Wissensbasis wurden entfernt – die Analyse läuft ausschließlich online [erledigt]
 
-## Phase E – Ausbau (geplant)
+## Phase E – Bedienung & Schnellstart (fertig)
+
+- Modernisierte Oberfläche: Material-3-Farbschema mit Farbverlauf, animierter Kamera-Button, Karten-Layout auf der Startseite [erledigt]
+- Schnellfoto über mehrere Wege: großer Kamera-Button, App-Symbol-Long-Press-Shortcuts (Foto/Galerie), Schnelleinstellungs-Kachel [erledigt]
+- Direktanalyse ohne Rückfrage (Opt-in in den Einstellungen): Analyse startet sofort nach dem Foto [erledigt]
+
+## Phase F – Ausbau (geplant)
 
 - Mehrere Fotos pro Objekt für genauere Erkennung
 - Verlauf als Datei exportieren/importieren (Backup)
 - Zusätzliche Sprachen
 - Homescreen-Widget für Schnellstart
 
-## Phase F – Qualität & Verteilung (geplant)
+## Phase G – Qualität & Verteilung (geplant)
 
 - Unit- und UI-Tests
 - Signierter Release-Build (eigener Keystore) statt Debug-APK
