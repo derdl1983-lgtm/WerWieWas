@@ -501,6 +501,11 @@ fun SettingsScreen(onClose: () -> Unit) {
                                         model = ""
                                         baseUrl = ""
                                         apiKey = OnlineAnalyzer.apiKeyFor(context, p)
+                                        prefs.edit()
+                                            .putString("ai_provider", p)
+                                            .remove("ai_model")
+                                            .remove("ai_base_url")
+                                            .apply()
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text(OnlineAnalyzer.label(p)) }
@@ -575,8 +580,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                                     .putString(provider + "_api_key", apiKey)
                                     .apply()
                                 Toast.makeText(context, "Einstellungen gespeichert.", Toast.LENGTH_SHORT).show()
-                            },
-                            enabled = apiKey.isNotBlank()
+                            }
                         ) { Text("Speichern") }
                         OutlinedButton(
                             onClick = {
@@ -587,6 +591,17 @@ fun SettingsScreen(onClose: () -> Unit) {
                             enabled = apiKey.isNotBlank()
                         ) { Text("Entfernen") }
                     }
+                    Text(
+                        if (apiKey.isNotBlank()) {
+                            "Online-Analyse bereit: API-Schlüssel für " + OnlineAnalyzer.label(provider) + " hinterlegt."
+                        } else {
+                            "Kein API-Schlüssel hinterlegt – die Online-Analyse ist derzeit nicht möglich. " +
+                                "Die lokale Bilderkennung, die Stimmen und das Erklärvideo " +
+                                "funktionieren weiterhin komplett ohne Schlüssel."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
                     TextButton(
                         onClick = {
                             runCatching {
