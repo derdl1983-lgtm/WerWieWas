@@ -7,3 +7,7 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+
+# Tink (über androidx.security:security-crypto) referenziert Error-Prone-Annotationen,
+# die nur zur Kompilierzeit existieren und nicht in der Runtime-Klassenliste liegen.
+-dontwarn com.google.errorprone.annotations.**
