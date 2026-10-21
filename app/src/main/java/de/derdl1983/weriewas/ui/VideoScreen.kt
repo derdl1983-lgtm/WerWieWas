@@ -1,13 +1,18 @@
 package de.derdl1983.weriewas.ui
 
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Context
+import android.content.Intent
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -179,6 +184,7 @@ fun VideoScreen(
     var exporting by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableStateOf("") }
     var exportMessage by remember { mutableStateOf<String?>(null) }
+    var exportedUri by remember { mutableStateOf<Uri?>(null) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var edgeLoading by remember { mutableStateOf(false) }
     var edgeError by remember { mutableStateOf<String?>(null) }
@@ -614,6 +620,7 @@ fun VideoScreen(
                     if (!exporting) {
                         exporting = true
                         exportMessage = null
+                        exportedUri = null
                         exportProgress = ""
                         playing = false
                         scope.launch {
@@ -667,11 +674,15 @@ fun VideoScreen(
                                         audioFiles
                                     ) { d, t -> exportProgress = "Schritt " + d + " von " + t }
                                 } catch (e: Exception) {
-                                    "Export fehlgeschlagen: " + (e.message ?: "unbekannter Fehler")
+                                    VideoExporter.ExportResult(
+                                        "Export fehlgeschlagen: " + (e.message ?: "unbekannter Fehler"),
+                                        null
+                                    )
                                 }
                             }
                             exporting = false
-                            exportMessage = result
+                            exportMessage = result.message
+                            exportedUri = result.shareUri
                         }
                     }
                 },
@@ -695,9 +706,88 @@ fun VideoScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
             }
+            val vUri = exportedUri
+            if (vUri != null) {
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Video hochladen & teilen:",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.height(4.dp))
+                Button(
+                    onClick = { shareVideo(context, vUri, "com.google.android.youtube") },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Auf YouTube hochladen") }
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    onClick = { shareVideo(context, vUri, "com.zhiliaoapp.musically") },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Auf TikTok hochladen") }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { shareVideo(context, vUri, "com.instagram.android") },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Instagram") }
+                    OutlinedButton(
+                        onClick = { shareVideo(context, vUri, "com.whatsapp") },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("WhatsApp") }
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { shareVideo(context, vUri, "org.telegram.messenger") },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Telegram") }
+                    OutlinedButton(
+                        onClick = { shareVideo(context, vUri, "com.facebook.katana") },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Facebook") }
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = { shareVideo(context, vUri, null) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Video teilen … (alle Apps)") }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "YouTube und TikTok öffnen ihren Upload mit dem Video als Entwurf – " +
+                        "Titel, Beschreibung und Veröffentlichen legst du dort fest.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
             Spacer(Modifier.height(24.dp))
         }
     }
 }
 
+/** Übergibt das exportierte Video an eine Ziel-App (z. B. YouTube, TikTok) oder die System-Auswahl. */
+private fun shareVideo(context: Context, uri: Uri, pkg: String?) {
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "video/mp4"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_SUBJECT, "Wer Wie Was – Erklärvideo")
+        clipData = ClipData.newRawUri("video", uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (pkg != null) setPackage(pkg)
+    }
+    try {
+        context.startActivity(send.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (e: ActivityNotFoundException) {
+        // Ziel-App nicht installiert: System-Auswahl anbieten
+        send.setPackage(null)
+        Toast.makeText(context, "Ziel-App nicht gefunden – bitte aus der Auswahl wählen.", Toast.LENGTH_SHORT).show()
+        runCatching {
+            context.startActivity(
+                Intent.createChooser(send, "Video teilen")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    } catch (e: Exception) {
+        // Still ignorieren
+    }
+}
 

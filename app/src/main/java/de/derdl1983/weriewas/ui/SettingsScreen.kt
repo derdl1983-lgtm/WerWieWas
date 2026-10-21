@@ -7,6 +7,8 @@ import android.net.Uri
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -100,6 +102,23 @@ fun SettingsScreen(onClose: () -> Unit) {
     // Direktanalyse ohne Rückfrage
     var autoAnalyze by rememberSaveable { mutableStateOf(prefs.getBoolean("auto_analyze", false)) }
     var showAutoDialog by remember { mutableStateOf(false) }
+
+    // Schnellzugriff auf dem Sperrbildschirm
+    var lockAccess by rememberSaveable {
+        mutableStateOf(prefs.getBoolean(de.derdl1983.weriewas.service.LockAccess.PREF_KEY, false))
+    }
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        lockAccess = granted
+        prefs.edit().putBoolean(de.derdl1983.weriewas.service.LockAccess.PREF_KEY, granted).apply()
+        de.derdl1983.weriewas.service.LockAccess.sync(context, granted)
+        Toast.makeText(
+            context,
+            if (granted) "Schnellzugriff aktiviert." else "Ohne Benachrichtigungs-Freigabe nicht möglich.",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
 
     // KI-Profil & Antwortstil
     var audience by rememberSaveable { mutableStateOf(prefs.getString("ai_audience", "all") ?: "all") }
@@ -717,6 +736,65 @@ fun SettingsScreen(onClose: () -> Unit) {
                 }
             }
 
+            // ---------- Schnellzugriff auf dem Sperrbildschirm ----------
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "Sperrbildschirm",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "Zeigt eine dauerhafte „Foto analysieren“-Benachrichtigung auf dem " +
+                            "Sperrbildschirm an. Ein Tipp darauf öffnet die Kamera direkt – " +
+                            "ohne vorheriges Entsperren. Zusätzlich bleibt die Schnellfoto-Kachel " +
+                            "in den Schnelleinstellungen verfügbar, die du vom Sperrbildschirm " +
+                            "aus öffnen kannst.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Schnellzugriff auf dem Sperrbildschirm",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                if (lockAccess)
+                                    "Aktiv: Kamera per Tipp auf die Benachrichtigung."
+                                else
+                                    "Aus: Keine Benachrichtigung auf dem Sperrbild.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                        Switch(
+                            checked = lockAccess,
+                            onCheckedChange = { wanted ->
+                                if (wanted && !de.derdl1983.weriewas.service.LockAccess.canNotify(context)) {
+                                    notifPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                                } else {
+                                    lockAccess = wanted
+                                    prefs.edit().putBoolean(de.derdl1983.weriewas.service.LockAccess.PREF_KEY, wanted).apply()
+                                    de.derdl1983.weriewas.service.LockAccess.sync(context, wanted)
+                                    Toast.makeText(
+                                        context,
+                                        if (wanted) "Schnellzugriff aktiviert." else "Schnellzugriff deaktiviert.",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -957,6 +1035,7 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 }
+
 
 
 

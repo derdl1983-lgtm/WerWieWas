@@ -4,6 +4,17 @@
     <!-- Internet für die Online-Analyse, die Online-Stimmen (Edge-TTS),
          die Themenbildersuche (Wikimedia/Openverse) und die Wikipedia-Links. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Benachrichtigungen für den Schnellzugriff auf dem Sperrbildschirm (ab Android 13) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Paketsichtbarkeit: Apps sehen, die Teilen (WhatsApp, Instagram, Facebook,
+         Telegram, Signal, YouTube, TikTok …) unterstützen – nötig ab Android 11. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
 
     <application
         android:name=".WerWieWasApp"
@@ -47,6 +58,10 @@
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
+            <!-- Kachel darf auch auf dem Sperrbildschirm benutzt werden -->
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_LOCK_SCREEN"
+                android:value="true" />
         </service>
 
         <provider
@@ -60,4 +75,3 @@
         </provider>
     </application>
 </manifest>
-

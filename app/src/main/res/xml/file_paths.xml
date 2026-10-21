@@ -2,4 +2,9 @@
 <paths>
     <!-- Kamerafotos landen im Cache-Unterordner "camera" -->
     <cache-path name="camera" path="camera/" />
+    <!-- Analysefotos im internen App-Speicher (Teilen über FileProvider) -->
+    <files-path name="images" path="images/" />
+    <!-- Exportierte Videos auf älteren Android-Versionen (unter Android 10) -->
+    <external-files-path name="videos" path="Movies/videos/" />
+    <files-path name="videos_intern" path="videos/" />
 </paths>

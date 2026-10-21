@@ -19,6 +19,12 @@ class WerWieWasApp : Application() {
         super.onCreate()
         de.derdl1983.weriewas.util.EdgeTTS.pruneCache(this)
         installCrashLogger()
+        // Sperrbild-Schnellzugriff: Benachrichtigung nach Geräteneustart wiederherstellen
+        val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
+        de.derdl1983.weriewas.service.LockAccess.sync(
+            this,
+            prefs.getBoolean(de.derdl1983.weriewas.service.LockAccess.PREF_KEY, false)
+        )
     }
 
     /**
@@ -87,3 +93,4 @@ class WerWieWasApp : Application() {
         }
     }
 }
+

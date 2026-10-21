@@ -2,7 +2,9 @@ package de.derdl1983.weriewas
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -83,19 +85,41 @@ class MainActivity : ComponentActivity() {
         handleLaunchIntent(intent)
     }
 
+    /**
+     * Ermöglicht das Anzeigen der App ÜBER dem Sperrbildschirm: Ein Schnellstart
+     * (Kachel, Shortcut oder Sperrbild-Benachrichtigung) öffnet die Kamera sofort,
+     * ohne dass das Gerät vorher entsperrt werden muss. Normale App-Starts sperren
+     * das Verhalten wieder ab – die Historie bleibt so geschützt.
+     */
+    private fun allowOverLockScreen(enable: Boolean) {
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(enable)
+            setTurnScreenOn(enable)
+        } else {
+            @Suppress("DEPRECATION")
+            val flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            @Suppress("DEPRECATION")
+            if (enable) window.addFlags(flags) else window.clearFlags(flags)
+        }
+    }
+
     /** Wertet den Start-Intent (Kachel oder App-Symbol-Shortcut) genau einmal aus. */
     private fun handleLaunchIntent(intent: Intent?) {
         when (intent?.action) {
             ACTION_OPEN_CAMERA -> {
+                allowOverLockScreen(true)
                 intent.action = null // verbraucht, damit eine Rotation die Kamera nicht erneut öffnet
                 currentScreen = Screen.Home
                 autoOpenCamera = true
             }
             ACTION_OPEN_GALLERY -> {
+                allowOverLockScreen(true)
                 intent.action = null
                 currentScreen = Screen.Home
                 autoOpenGallery = true
             }
+            else -> allowOverLockScreen(false)
         }
     }
 
@@ -229,5 +253,3 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
-

@@ -1,5 +1,7 @@
 package de.derdl1983.weriewas.ui
 
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
@@ -10,6 +12,7 @@ import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -117,6 +120,7 @@ fun ResultScreen(
     val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
     var discovery by remember(discoveryId) { mutableStateOf(DiscoveryStore.get(context, discoveryId)) }
     var showDelete by remember { mutableStateOf(false) }
+    var showShareDialog by remember { mutableStateOf(false) }
     var showOnlineDialog by remember { mutableStateOf(false) }
     var onlineRunning by remember { mutableStateOf(false) }
     var onlineError by remember { mutableStateOf<String?>(null) }
@@ -578,7 +582,7 @@ fun ResultScreen(
                 Text("Erklärvideo ansehen")
             }
             OutlinedButton(
-                onClick = { stopReading(); shareDiscovery(context, d) },
+                onClick = { stopReading(); showShareDialog = true },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(
@@ -591,6 +595,53 @@ fun ResultScreen(
             }
             Spacer(Modifier.height(8.dp))
         }
+    }
+
+    if (showShareDialog) {
+        AlertDialog(
+            onDismissRequest = { showShareDialog = false },
+            title = { Text("Entdeckung teilen") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        "Foto und Erklärung teilen über:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    listOf(
+                        "WhatsApp" to "com.whatsapp",
+                        "Instagram" to "com.instagram.android",
+                        "Facebook" to "com.facebook.katana",
+                        "Telegram" to "org.telegram.messenger",
+                        "Signal" to "org.thoughtcrime.securesms",
+                        "Snapchat" to "com.snapchat.android"
+                    ).forEach { (name, pkg) ->
+                        TextButton(
+                            onClick = { showShareDialog = false; shareVia(context, d, pkg) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(name) }
+                    }
+                    TextButton(
+                        onClick = { showShareDialog = false; shareViaEmail(context, d) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("E-Mail") }
+                    TextButton(
+                        onClick = { showShareDialog = false; shareViaSms(context, d) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("SMS") }
+                    TextButton(
+                        onClick = { showShareDialog = false; shareVia(context, d, null) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Mehr Apps …") }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showShareDialog = false }) { Text("Schließen") }
+            }
+        )
     }
 
     if (showDelete) {
@@ -710,8 +761,8 @@ private fun openUrl(context: Context, url: String) {
     }
 }
 
-/** Teilt die Entdeckung als Text. */
-private fun shareDiscovery(context: Context, d: Discovery) {
+/** Baut den Klartext der Entdeckung zum Teilen. */
+private fun buildShareText(d: Discovery): String {
     val sb = StringBuilder()
     sb.append(d.explanation.title).append("\n\n")
     sb.append(d.explanation.summary).append("\n\n")
@@ -729,16 +780,91 @@ private fun shareDiscovery(context: Context, d: Discovery) {
         sb.append("\n")
     }
     sb.append("(Analyseergebnis der App „Wer Wie Was“)")
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_TEXT, sb.toString())
+    return sb.toString()
+}
+
+/**
+ * Teilt die Entdeckung als Foto + Text an eine bestimmte App (pkg != null)
+ * oder über die System-Auswahl (pkg == null). Ist die Ziel-App nicht installiert,
+ * fällt die App auf die System-Auswahl zurück.
+ */
+private fun shareVia(context: Context, d: Discovery, pkg: String?) {
+    val text = buildShareText(d)
+    val imageFile = File(d.imagePath)
+    val hasImage = imageFile.exists()
+    val imageUri = if (hasImage) {
+        runCatching {
+            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", imageFile)
+        }.getOrNull()
+    } else {
+        null
     }
-    runCatching {
-        context.startActivity(
-            Intent.createChooser(send, "Entdeckung teilen")
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = if (imageUri != null) "image/*" else "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+        putExtra(Intent.EXTRA_SUBJECT, "Wer Wie Was: " + d.explanation.title)
+        if (imageUri != null) {
+            putExtra(Intent.EXTRA_STREAM, imageUri)
+            clipData = ClipData.newRawUri("foto", imageUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (pkg != null) setPackage(pkg)
+    }
+    try {
+        val target = if (pkg == null) {
+            Intent.createChooser(send, "Entdeckung teilen").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        } else {
+            send.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(target)
+    } catch (e: ActivityNotFoundException) {
+        // Ziel-App nicht installiert: System-Auswahl anbieten
+        send.setPackage(null)
+        runCatching {
+            context.startActivity(
+                Intent.createChooser(send, "Entdeckung teilen")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    } catch (e: Exception) {
+        // Still ignorieren wie bisher
     }
 }
+
+/** Teilt die Entdeckung als E-Mail (Betreff, Text, Foto als Anhang). */
+private fun shareViaEmail(context: Context, d: Discovery) {
+    val text = buildShareText(d)
+    val imageFile = File(d.imagePath)
+    val imageUri = if (imageFile.exists()) {
+        runCatching {
+            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", imageFile)
+        }.getOrNull()
+    } else {
+        null
+    }
+    val mail = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:")).apply {
+        putExtra(Intent.EXTRA_SUBJECT, "Wer Wie Was: " + d.explanation.title)
+        putExtra(Intent.EXTRA_TEXT, text)
+        if (imageUri != null) {
+            putExtra(Intent.EXTRA_STREAM, imageUri)
+            clipData = ClipData.newRawUri("foto", imageUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+    runCatching {
+        context.startActivity(mail.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
+
+/** Teilt die Entdeckung als SMS (Text). */
+private fun shareViaSms(context: Context, d: Discovery) {
+    val sms = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")).apply {
+        putExtra("sms_body", buildShareText(d))
+    }
+    runCatching {
+        context.startActivity(sms.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
+
 
 

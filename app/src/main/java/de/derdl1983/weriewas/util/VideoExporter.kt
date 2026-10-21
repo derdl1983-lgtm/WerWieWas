@@ -16,6 +16,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -26,6 +27,7 @@ import android.speech.tts.Voice
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import androidx.core.content.FileProvider
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
@@ -63,6 +65,12 @@ object VideoExporter {
     private const val SILENCE_SECONDS = 0.6
 
     /**
+     * Ergebnis eines Video-Exports: Beschreibung des Speicherorts und (wo möglich)
+     * eine Content-URI, über die das Video direkt geteilt bzw. hochgeladen werden kann.
+     */
+    data class ExportResult(val message: String, val shareUri: Uri?)
+
+    /**
      * Erstellt das Video und gibt eine Beschreibung des Speicherorts zurück.
      * onProgress wird mit (erledigte Schritte, Gesamtschritte) aufgerufen.
      * preAudio: optional je Szene eine fertige WAV-Datei (z. B. Edge-TTS);
@@ -76,7 +84,7 @@ object VideoExporter {
         rate: Float,
         preAudio: List<File?>? = null,
         onProgress: (done: Int, total: Int) -> Unit
-    ): String {
+    ): ExportResult {
         if (slides.isEmpty()) throw ExportException("Keine Inhalte zum Export vorhanden.")
         val totalSteps = 3 + slides.size
         var done = 0
@@ -122,10 +130,10 @@ object VideoExporter {
         val file = mux(context, audio, video)
         done++
         onProgress(done, totalSteps)
-        val message = saveVideo(context, file)
+        val result = saveVideo(context, file)
         done++
         onProgress(done, totalSteps)
-        return message
+        return result
     }
 
     /** Erzeugt je Szene eine gesprochene Tonspur – vorgefertigte Dateien haben Vorrang. */
@@ -451,7 +459,7 @@ object VideoExporter {
     }
 
     /** Speichert das fertige Video in der Mediathek (ab Android 10) bzw. im App-Ordner. */
-    private fun saveVideo(context: Context, file: File): String {
+    private fun saveVideo(context: Context, file: File): ExportResult {
         if (Build.VERSION.SDK_INT >= 29) {
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, file.name)
@@ -463,14 +471,18 @@ object VideoExporter {
             context.contentResolver.openOutputStream(uri)?.use { it.write(file.readBytes()) }
                 ?: throw ExportException("Video konnte nicht gespeichert werden.")
             file.delete()
-            return "Video gespeichert unter Filme/WerWieWas/" + file.name
+            return ExportResult("Video gespeichert unter Filme/WerWieWas/" + file.name, uri)
         }
         val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir, "videos")
         dir.mkdirs()
         val target = File(dir, file.name)
         file.copyTo(target, overwrite = true)
         file.delete()
-        return "Video gespeichert unter: " + target.absolutePath
+        // Content-URI über den FileProvider, damit das Video direkt geteilt werden kann
+        val shareUri = runCatching {
+            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", target)
+        }.getOrNull()
+        return ExportResult("Video gespeichert unter: " + target.absolutePath, shareUri)
     }
 
     /** Rendert eine Szene als Standbild (Gradient-Hintergrund, Foto, Emoji, Titel, Text). */
@@ -589,4 +601,5 @@ object VideoExporter {
         canvas.restore()
     }
 }
+
 
