@@ -66,5 +66,9 @@ dependencies {
     // WebSocket-Client für die gratis Edge-TTS-Online-Stimmen
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // Verschlüsselte Speicherung der API-Schlüssel (EncryptedSharedPreferences, Android Keystore)
+    implementation("androidx.security:security-crypto:1.0.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
+

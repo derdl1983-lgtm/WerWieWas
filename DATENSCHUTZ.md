@@ -10,7 +10,7 @@ Wer Wie Was funktioniert ohne Konto der App, ohne Tracking und ohne Werbung. Die
 | --- | --- | --- |
 | Fotos (verkleinerte Kopie) | App-interner Speicher (filesDir/images) | Löschen der Entdeckung oder „Alle Entdeckungen löschen“ |
 | Entdeckungen (Text, Labels, Links) | filesDir/discoveries.json | dito |
-| API-Schlüssel des gewählten KI-Anbieters | Android-SharedPreferences (nur lokal) | Einstellungen → „Entfernen“ |
+| API-Schlüssel der KI-Anbieter | verschlüsselter App-Speicher (EncryptedSharedPreferences, geschützt über den Android-Keystore) | Einstellungen → „Entfernen“ |
 | Temporäre Sprach- und Bilddateien | App-Cache (cacheDir, „www_…“) | automatisch nach 24 Stunden |
 
 Deinstallieren der App entfernt alle Daten endgültig.
@@ -43,5 +43,6 @@ Bei beiden Diensten handelt es sich um offene APIs ohne API-Schlüssel und ohne 
 ## Keine Datenweitergabe
 
 Die App enthält keine Analyse-SDKs, keine Werbung und keine Crash-Reporting-Dienste von Drittanbietern. Der Absturz-Protokollordner (für „Fehlerbericht teilen“) bleibt ausschließlich auf dem Gerät.
+
 
 

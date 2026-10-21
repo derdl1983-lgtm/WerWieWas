@@ -646,14 +646,15 @@ fun SettingsScreen(onClose: () -> Unit) {
                                     .putString("ai_provider", provider)
                                     .putString("ai_model", model)
                                     .putString("ai_base_url", baseUrl)
-                                    .putString(provider + "_api_key", apiKey)
                                     .apply()
+                                // API-Schlüssel verschlüsselt im Keystore-gesicherten Speicher ablegen
+                                de.derdl1983.weriewas.util.SecretStore.put(context, provider + "_api_key", apiKey)
                                 Toast.makeText(context, "Einstellungen gespeichert.", Toast.LENGTH_SHORT).show()
                             }
                         ) { Text("Speichern") }
                         OutlinedButton(
                             onClick = {
-                                prefs.edit().remove(provider + "_api_key").apply()
+                                de.derdl1983.weriewas.util.SecretStore.remove(context, provider + "_api_key")
                                 apiKey = ""
                                 Toast.makeText(context, "API-Schlüssel entfernt.", Toast.LENGTH_SHORT).show()
                             },
@@ -807,6 +808,8 @@ fun SettingsScreen(onClose: () -> Unit) {
                     )
                     Text(
                         "Alle Fotos und Entdeckungen liegen ausschließlich im App-internen Speicher deines Geräts. " +
+                            "Deine API-Schlüssel werden verschlüsselt gespeichert (Android-Keystore) und " +
+                            "erscheinen nirgends im Klartext. " +
                             "Exportierte Erklärvideos werden in deiner Mediathek gespeichert. " +
                             "Ein Backup oder eine Übertragung auf andere Geräte ist nicht vorgesehen.",
                         style = MaterialTheme.typography.bodyMedium
@@ -1035,6 +1038,7 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 }
+
 
 
 

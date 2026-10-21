@@ -120,7 +120,7 @@ object OnlineAnalyzer {
         prefs(context).getString("ai_provider", "mistral") ?: "mistral"
 
     fun apiKeyFor(context: Context, provider: String): String =
-        prefs(context).getString(provider + "_api_key", "") ?: ""
+        de.derdl1983.weriewas.util.SecretStore.get(context, provider + "_api_key")
 
     /** Lädt das gespeicherte Antwortprofil des Nutzers. */
     fun loadProfile(context: Context): ProfileConfig {

@@ -18,6 +18,8 @@ class WerWieWasApp : Application() {
     override fun onCreate() {
         super.onCreate()
         de.derdl1983.weriewas.util.EdgeTTS.pruneCache(this)
+        // API-Schlüssel aus älteren Versionen einmalig verschlüsselt migrieren
+        de.derdl1983.weriewas.util.SecretStore.migratePlainApiKeys(this)
         installCrashLogger()
         // Sperrbild-Schnellzugriff: Benachrichtigung nach Geräteneustart wiederherstellen
         val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -93,4 +95,5 @@ class WerWieWasApp : Application() {
         }
     }
 }
+
 
