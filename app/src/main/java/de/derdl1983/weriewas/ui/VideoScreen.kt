@@ -66,6 +66,7 @@ import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.util.EdgeTTS
 import de.derdl1983.weriewas.util.Images
 import de.derdl1983.weriewas.util.VideoExporter
+import de.derdl1983.weriewas.util.WebImages
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -142,6 +143,19 @@ fun VideoScreen(
 
     val slides = remember(discovery.id) { buildSlides(discovery) }
     val bitmap = remember(discovery.id) { Images.loadThumbnail(discovery.imagePath, 720) }
+
+    // Passende, frei lizenzierte Online-Themenbilder je Szene (falls online verfügbar)
+    val webImages = remember(discovery.id) { mutableStateOf<List<WebImages.WebImage?>?>(null) }
+    LaunchedEffect(discovery.id) {
+        webImages.value = null
+        val queries = WebImages.queriesForSlides(
+            discovery.explanation.title,
+            slides.map { it.title },
+            slides.map { it.text }
+        )
+        webImages.value = WebImages.findByQueries(context, queries)
+    }
+
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
     val speedLabels = remember {
@@ -393,6 +407,32 @@ fun VideoScreen(
                     )
                 }
                 Spacer(Modifier.height(20.dp))
+            } else {
+                // Online gefundenes Themenbild mit Quellenangabe (Videotext-Stil)
+                val webImage = webImages.value?.getOrNull(page)
+                if (webImage != null) {
+                    val webBmp = Images.loadThumbnail(webImage.filePath, 900)
+                    if (webBmp != null) {
+                        Card(shape = RoundedCornerShape(16.dp)) {
+                            Image(
+                                bitmap = webBmp.asImageBitmap(),
+                                contentDescription = "Themenbild (frei lizenziert)",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(220.dp),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        Text(
+                            text = "Bild: " + webImage.credit,
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(16.dp))
+                    }
+                }
             }
 
             if (slide.emoji.isNotBlank()) {
@@ -579,12 +619,16 @@ fun VideoScreen(
                         scope.launch {
                             val result = withContext(Dispatchers.IO) {
                                 try {
-                                    val data = slides.map {
+                                    val webList = webImages.value
+                                    val data = slides.mapIndexed { i, s ->
+                                        val wi = if (s.showPhoto) null else webList?.getOrNull(i)
                                         VideoExporter.SlideData(
-                                            it.title,
-                                            it.text,
-                                            it.emoji,
-                                            if (it.showPhoto) discovery.imagePath else null
+                                            s.title,
+                                            s.text,
+                                            s.emoji,
+                                            if (s.showPhoto) discovery.imagePath else null,
+                                            wi?.filePath,
+                                            wi?.credit
                                         )
                                     }
                                     val audioFiles: List<File?>? = if (useEdge) {
@@ -655,4 +699,5 @@ fun VideoScreen(
         }
     }
 }
+
 

@@ -3,7 +3,6 @@ package de.derdl1983.weriewas.ml
 import android.content.Context
 import android.util.Base64
 import de.derdl1983.weriewas.data.Explanation
-import de.derdl1983.weriewas.data.InfoLink
 import de.derdl1983.weriewas.data.KnowledgeBase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -388,8 +387,11 @@ object OnlineAnalyzer {
         val facts = mutableListOf<String>()
         val factsArray = o.optJSONArray("facts") ?: JSONArray()
         for (i in 0 until factsArray.length()) facts.add(factsArray.optString(i))
-        val links: List<InfoLink> = KnowledgeBase.buildPublicLinks(title)
-        return Explanation(
+        // Weiterführende Links aus dem VOLLSTÄNDIGEN Analyseergebnis bauen
+        // (Kernthema + Schlüsselwörter aus den Erklärtexten, direkter
+        // Wikipedia-Artikel); benötigt einen Netzwerkzugriff, parse() läuft
+        // daher nur auf dem IO-Dispatcher.
+        val base = Explanation(
             title = title,
             category = o.optString("category", ""),
             summary = o.optString("summary", ""),
@@ -398,11 +400,13 @@ object OnlineAnalyzer {
             practical = o.optString("practical", ""),
             facts = facts,
             safety = o.optString("safety", ""),
-            links = links,
+            links = emptyList(),
             uncertain = o.optBoolean("uncertain", false),
             source = "online"
         )
+        return base.copy(links = KnowledgeBase.buildPublicLinks(base))
     }
 }
+
 
 

@@ -11,6 +11,7 @@ Wer Wie Was funktioniert ohne Konto der App, ohne Tracking und ohne Werbung. Die
 | Fotos (verkleinerte Kopie) | App-interner Speicher (filesDir/images) | Löschen der Entdeckung oder „Alle Entdeckungen löschen“ |
 | Entdeckungen (Text, Labels, Links) | filesDir/discoveries.json | dito |
 | API-Schlüssel des gewählten KI-Anbieters | Android-SharedPreferences (nur lokal) | Einstellungen → „Entfernen“ |
+| Temporäre Sprach- und Bilddateien | App-Cache (cacheDir, „www_…“) | automatisch nach 24 Stunden |
 
 Deinstallieren der App entfernt alle Daten endgültig.
 
@@ -23,12 +24,22 @@ Die Analyse läuft ausschließlich online über den KI-Anbieter, den du in den E
 - Die Server der Anbieter unterliegen deren Datenschutzerklärungen.
 - Der API-Schlüssel wird ausschließlich im Gerät gespeichert und direkt an den Anbieter übertragen.
 
+## Weiterführende Links und Themenbilder (online)
+
+Ohne deine Fotos werden bei bestimmten Aktionen kurze Suchanfragen im Klartext an externe Dienste gesendet:
+
+- Beim Abschluss einer Analyse fragt die App die **deutsche Wikipedia-API** (`de.wikipedia.org`) nach dem passenden Artikel, um den Weiterbildungs-Link direkt auf den Artikel zeigen zu lassen.
+- Beim Öffnen des Erklärvideos werden Suchbegriffe aus dem Analyseergebnis (Kernthema und Schlüsselwörter, nicht das Foto) an **Wikimedia Commons** (`commons.wikimedia.org`) und ersatzweise an **Openverse** (`api.openverse.org`) gesendet, um frei lizenzierte Themenbilder zu finden. Gefundene Bilder werden mit Quellen- und Lizenzangabe angezeigt und landen temporär im App-Cache (automatische Löschung nach 24 Stunden).
+
+Bei beiden Diensten handelt es sich um offene APIs ohne API-Schlüssel und ohne Konto.
+
 ## Berechtigungen
 
-- **Internet:** für die Foto-Analyse, die kostenlosen Online-Stimmen (Edge-TTS) und das Öffnen von Links im Browser.
+- **Internet:** für die Foto-Analyse, die kostenlosen Online-Stimmen (Edge-TTS), die Themenbildersuche (Wikimedia Commons/Openverse), die Wikipedia-Artikelsuche und das Öffnen von Links im Browser.
 - **Kamera:** Fotos werden über die Systemkamera aufgenommen; die App selbst besitzt keinen direkten Kamerazugriff.
 - **Schnelleinstellungen-Kachel:** reiner Start-Zugriff, keine Daten.
 
 ## Keine Datenweitergabe
 
 Die App enthält keine Analyse-SDKs, keine Werbung und keine Crash-Reporting-Dienste von Drittanbietern. Der Absturz-Protokollordner (für „Fehlerbericht teilen“) bleibt ausschließlich auf dem Gerät.
+

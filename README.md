@@ -8,9 +8,9 @@ Foto machen → verstehen: **Wer Wie Was** analysiert Objekte mit einer KI deine
 - **KI-Analyse online** – das Foto wird mit deinem eigenen API-Schlüssel von der KI analysiert; unterstützt werden Mistral, OpenAI-kompatible Dienste, OpenRouter, Google Gemini, Anthropic Claude und xAI Grok
 - **Ehrliche Unsicherheit** – ist sich die KI nicht sicher, sagt die App das deutlich; bei kritischen Objekten (Pilze, Medikamente, Werkzeuge) wird nie eine Gewissheit behauptet
 - **Erklärung in vier Fragen** – Was ist das? Wie funktioniert es? Wofür wird es verwendet? Plus Fakten und Sicherheitshinweise
-- **Erklärvideo** – Foto und Textkarten, vorgelesen über kostenlose Online-Stimmen oder die Android-Sprachausgabe
+- **Erklärvideo** – Foto, Textkarten und passende Online-Themenbilder (frei lizenziert, aus Wikimedia Commons/Openverse), vorgelesen über kostenlose Online-Stimmen oder die Android-Sprachausgabe
 - **Verlauf & Favoriten** – alle Entdeckungen bleiben auf dem Gerät
-- **Echte Links** – Wikipedia, YouTube-Suche, DuckDuckGo und Amazon-Suche als echte Suchlinks (keine erfundenen URLs)
+- **Echte Links** – Wikipedia (per API direkt auf den passenden Artikel aufgelöst), YouTube-Suche, DuckDuckGo und Amazon-Suche; Suchanfragen werden aus dem Kernthema und Schlüsselwörtern der gesamten Analyse gebaut
 - **Kamera-Schnellzugriff** – Schnelleinstellungs-Kachel öffnet die App direkt in der Kamera
 - **Datenschutz zuerst** – Foto-Versand nur nach ausdrücklicher Bestätigung pro Foto, mit eigenem API-Schlüssel, ohne Zwischenserver
 
@@ -39,7 +39,8 @@ app/
                              OpenRouter, Gemini, Claude, Grok)
       service/               Kamera-Kachel für die Schnelleinstellungen
       ui/                    Compose-Screens (Start, Analyse, Ergebnis, Verlauf, Video, Einstellungen)
-      util/                  Edge-TTS-Stimmen, Bild- und Video-Hilfsfunktionen
+      util/                  Edge-TTS-Stimmen, Bild-/Video-Hilfsfunktionen,
+                             Online-Bildersuche (Wikimedia Commons/Openverse)
     res/                     Icons, Strings, Themes
 .github/workflows/build-apk.yml   CI: baut die APK und veröffentlicht sie als Release
 ```
@@ -61,3 +62,4 @@ app/
 - `DATENSCHUTZ.md` – welche Daten wo gespeichert werden
 - `KOSTEN.md` – was die App kostet (Spoiler: die App selbst 0 €)
 - `ROADMAP.md` – was fertig ist und was noch kommt
+

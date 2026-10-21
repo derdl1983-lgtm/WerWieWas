@@ -41,12 +41,14 @@ import java.util.concurrent.TimeUnit
  */
 object VideoExporter {
 
-    /** Eine Szene des Videos (Titel, Text, Themenbild-Zeichen, optionales Foto). */
+    /** Eine Szene des Videos (Titel, Text, Themenbild-Zeichen, Foto, passendes Online-Bild). */
     data class SlideData(
         val title: String,
         val text: String,
         val emoji: String,
-        val photoPath: String?
+        val photoPath: String?,
+        val webImagePath: String? = null,
+        val webImageCredit: String? = null
     )
 
     private class SlideAudio(val pcm: ByteArray, val sampleRate: Int, val channels: Int)
@@ -491,9 +493,11 @@ object VideoExporter {
         canvas.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bg)
 
         var top = 140f
+        var hasImage = false
         if (slide.photoPath != null) {
             val photo = BitmapFactory.decodeFile(slide.photoPath)
             if (photo != null) {
+                hasImage = true
                 val target = RectF(60f, top, WIDTH - 60f, top + 600f)
                 val matrix = Matrix()
                 matrix.setRectToRect(
@@ -505,8 +509,27 @@ object VideoExporter {
                 photo.recycle()
                 top += 660f
             }
+        } else if (slide.webImagePath != null) {
+            // Passendes Online-Themenbild (frei lizenziert, mit Quellenzeile)
+            val web = BitmapFactory.decodeFile(slide.webImagePath)
+            if (web != null) {
+                hasImage = true
+                val target = RectF(60f, top, WIDTH - 60f, top + 460f)
+                drawCenterCrop(canvas, web, target)
+                web.recycle()
+                top += 480f
+                val credit = slide.webImageCredit
+                if (!credit.isNullOrBlank()) {
+                    val cp = Paint(Paint.ANTI_ALIAS_FLAG)
+                    cp.textSize = 26f
+                    cp.textAlign = Paint.Align.CENTER
+                    cp.color = Color.argb(210, 255, 255, 255)
+                    canvas.drawText("Bild: " + credit, WIDTH / 2f, top, cp)
+                    top += 64f
+                }
+            }
         }
-        if (slide.emoji.isNotBlank()) {
+        if (slide.emoji.isNotBlank() && !hasImage) {
             val p = Paint(Paint.ANTI_ALIAS_FLAG)
             p.textSize = 190f
             p.textAlign = Paint.Align.CENTER
@@ -528,16 +551,42 @@ object VideoExporter {
         canvas.restore()
         top += titleLayout.height + 60f
 
-        val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
-        bodyPaint.textSize = 42f
-        bodyPaint.color = Color.WHITE
-        val bodyLayout = StaticLayout.Builder.obtain(
-            slide.text, 0, slide.text.length, bodyPaint, WIDTH - 160
-        ).setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(0f, 1.25f).build()
+        // Fließtext – der Schriftgrad passt sich an, damit der Text auch unter
+        // einem Themenbild vollständig auf die Szene passt.
+        val makeBody: (Float) -> StaticLayout = { size ->
+            val bp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            bp.textSize = size
+            bp.color = Color.WHITE
+            StaticLayout.Builder.obtain(
+                slide.text, 0, slide.text.length, bp, WIDTH - 160
+            ).setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(0f, 1.25f).build()
+        }
+        var bodySize = 42f
+        var bodyLayout = makeBody(bodySize)
+        while (top + bodyLayout.height > HEIGHT - 80f && bodySize > 26f) {
+            bodySize -= 4f
+            bodyLayout = makeBody(bodySize)
+        }
         canvas.save()
         canvas.translate((WIDTH - bodyLayout.width) / 2f, top)
         bodyLayout.draw(canvas)
         canvas.restore()
         return bmp
     }
+
+    /** Zeichnet eine Bitmap formatfüllend und mittig beschnitten in ein Zielrechteck. */
+    private fun drawCenterCrop(canvas: Canvas, bmp: Bitmap, target: RectF) {
+        val scale = maxOf(target.width() / bmp.width, target.height() / bmp.height)
+        val matrix = Matrix()
+        matrix.postScale(scale, scale)
+        val w = bmp.width * scale
+        val h = bmp.height * scale
+        matrix.postTranslate(target.left + (target.width() - w) / 2f, target.top + (target.height() - h) / 2f)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        canvas.save()
+        canvas.clipRect(target)
+        canvas.drawBitmap(bmp, matrix, paint)
+        canvas.restore()
+    }
 }
+
