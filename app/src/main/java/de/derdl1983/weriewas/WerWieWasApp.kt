@@ -74,6 +74,27 @@ class WerWieWasApp : Application() {
 
     companion object {
 
+        /**
+         * Schreibt einen Fehler ohne App-Absturz (z. B. fehlgeschlagener Video-Export)
+         * als Protokolldatei – sichtbar und teilbar unter Einstellungen → Fehlerbericht.
+         */
+        fun logExportError(context: Context, error: Throwable) {
+            try {
+                val dir = File(context.filesDir, "crash_logs")
+                dir.mkdirs()
+                val sb = StringBuilder()
+                sb.append("Fehler beim Video-Export (App lief weiter)").append('\n')
+                sb.append(error.toString()).append('\n')
+                error.stackTrace.forEach { sb.append("    at ").append(it.toString()).append('\n') }
+                sb.append('\n').append("(Export-Fehlerprotokoll der App „Wer Wie Was“)")
+                File(dir, "export_fehler_" + System.currentTimeMillis() + ".txt").writeText(sb.toString())
+                // Protokoll-Ordner auf die neuesten 5 Dateien begrenzen
+                dir.listFiles()?.sortedByDescending { it.name }?.drop(5)?.forEach { it.delete() }
+            } catch (e: Exception) {
+                // Protokollierung darf nie selbst crashen
+            }
+        }
+
         /** Liefert die neueste Absturz-Protokolldatei, falls eine existiert. */
         fun latestCrashLog(context: Context): File? {
             return try {
@@ -95,5 +116,6 @@ class WerWieWasApp : Application() {
         }
     }
 }
+
 
 

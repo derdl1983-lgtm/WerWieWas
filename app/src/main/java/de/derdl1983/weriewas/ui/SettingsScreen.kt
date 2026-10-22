@@ -842,7 +842,7 @@ fun SettingsScreen(onClose: () -> Unit) {
                     val log = crashLog
                     if (log != null) {
                         Text(
-                            "Letzter Fehlerbericht der App (entsteht nach einem Absturz):",
+                            "Letzter Fehlerbericht der App (Absturz oder fehlgeschlagener Video-Export):",
                             style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -1057,6 +1057,7 @@ fun SettingsScreen(onClose: () -> Unit) {
         )
     }
 }
+
 
 
 

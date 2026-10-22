@@ -22,6 +22,7 @@ import de.derdl1983.weriewas.ui.HistoryScreen
 import de.derdl1983.weriewas.ui.HomeScreen
 import de.derdl1983.weriewas.ui.ResultScreen
 import de.derdl1983.weriewas.ui.SettingsScreen
+import de.derdl1983.weriewas.ui.VideoArchiveScreen
 import de.derdl1983.weriewas.ui.VideoScreen
 import de.derdl1983.weriewas.ui.WerWieWasTheme
 import de.derdl1983.weriewas.util.Images
@@ -37,6 +38,7 @@ sealed interface Screen {
     data class Result(val discoveryId: String, val fromHistory: Boolean = false) : Screen
     data object History : Screen
     data class Video(val discoveryId: String, val fromHistory: Boolean = false) : Screen
+    data object VideoArchive : Screen
     data object Settings : Screen
 }
 
@@ -140,6 +142,7 @@ class MainActivity : ComponentActivity() {
                 outState.putString(KEY_SCREEN, "video"); outState.putString(KEY_ARG, s.discoveryId)
                 outState.putBoolean(KEY_FLAG, s.fromHistory)
             }
+            Screen.VideoArchive -> outState.putString(KEY_SCREEN, "videoarchive")
             Screen.Settings -> outState.putString(KEY_SCREEN, "settings")
         }
     }
@@ -150,6 +153,7 @@ class MainActivity : ComponentActivity() {
         kind == "history" -> Screen.History
         kind == "video" && arg != null -> Screen.Video(arg, flag)
         kind == "settings" -> Screen.Settings
+        kind == "videoarchive" -> Screen.VideoArchive
         else -> Screen.Home
     }
 
@@ -226,7 +230,8 @@ class MainActivity : ComponentActivity() {
                 onCamera = { openCamera() },
                 onGallery = { openGallery() },
                 onHistory = { currentScreen = Screen.History },
-                onSettings = { currentScreen = Screen.Settings }
+                onSettings = { currentScreen = Screen.Settings },
+                onVideoArchive = { currentScreen = Screen.VideoArchive }
             )
             is Screen.Analyze -> AnalyzeScreen(
                 imagePath = screen.path,
@@ -247,9 +252,13 @@ class MainActivity : ComponentActivity() {
                 discoveryId = screen.discoveryId,
                 onClose = { currentScreen = Screen.Result(screen.discoveryId, screen.fromHistory) }
             )
+            Screen.VideoArchive -> VideoArchiveScreen(
+                onClose = { currentScreen = Screen.Home }
+            )
             Screen.Settings -> SettingsScreen(
                 onClose = { currentScreen = Screen.Home }
             )
         }
     }
 }
+

@@ -671,6 +671,16 @@ fun VideoScreen(
             }
             Spacer(Modifier.height(20.dp))
 
+            if (ttsFailed && !useEdge) {
+                Text(
+                    "Keine Sprachausgabe auf diesem Gerät gefunden – das Video wird ohne Ton exportiert. " +
+                        "Für natürliche Stimmen einmal kostenlos Edge-TTS in den Einstellungen einrichten.",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Spacer(Modifier.height(12.dp))
+            }
             Button(
                 onClick = {
                     if (!exporting) {
@@ -739,20 +749,26 @@ fun VideoScreen(
                                         wantSrt
                                     ) { d, t -> exportProgress = "Schritt " + d + " von " + t }
                                 } catch (e: Exception) {
+                                    de.derdl1983.weriewas.WerWieWasApp.logExportError(context, e)
                                     VideoExporter.ExportResult(
-                                        "Export fehlgeschlagen: " + (e.message ?: "unbekannter Fehler"),
+                                        "Export fehlgeschlagen: " + (e.message ?: "unbekannter Fehler") +
+                                            " – Details im Fehlerbericht (Einstellungen → Daten → Fehlerbericht teilen).",
                                         null
                                     )
                                 }
                             }
                             exporting = false
-                            exportMessage = result.message
+                            exportMessage = if (result.shareUri != null) {
+                                result.message + " Das Video liegt dauerhaft im Video-Archiv auf der Startseite."
+                            } else {
+                                result.message
+                            }
                             exportedUri = result.shareUri
                             exportedSrt = result.srtUri
                         }
                     }
                 },
-                enabled = !exporting && !(ttsFailed && !useEdge)
+                enabled = !exporting
             ) {
                 if (exporting) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -888,5 +904,6 @@ private fun shareVideo(context: Context, uri: Uri, pkg: String?) {
         // Still ignorieren
     }
 }
+
 
 

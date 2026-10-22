@@ -135,9 +135,27 @@ object VideoExporter {
             return pixels.last()
         }
 
-        val audio = encodeAudio(pcm, TARGET_RATE)
-        val video = encodeVideo(durationUs) { pixelsAt(it) }
-        val file = mux(context, audio, video)
+        val audio = try {
+            encodeAudio(pcm, TARGET_RATE)
+        } catch (e: ExportException) {
+            throw e
+        } catch (e: Exception) {
+            throw ExportException("Tonspur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
+        }
+        val video = try {
+            encodeVideo(durationUs) { pixelsAt(it) }
+        } catch (e: ExportException) {
+            throw e
+        } catch (e: Exception) {
+            throw ExportException("Videospur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
+        }
+        val file = try {
+            mux(context, audio, video)
+        } catch (e: ExportException) {
+            throw e
+        } catch (e: Exception) {
+            throw ExportException("Video-Datei konnte nicht erstellt werden: " + (e.message ?: e.javaClass.simpleName))
+        }
         done++
         onProgress(done, totalSteps)
         val videoBase = file.name.removeSuffix(".mp4")
@@ -178,7 +196,9 @@ object VideoExporter {
         }
         try {
             if (!initLatch.await(15, TimeUnit.SECONDS)) {
-                throw ExportException("Sprachausgabe konnte nicht initialisiert werden.")
+                // Keine Sprachausgabe verfügbar: Das Video wird ohne Ton exportiert
+                // (jede Szene erhält nur die kurze Sprechpause als Dauer).
+                return slides.map { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
             }
             tts.language = Locale.GERMANY
             tts.setSpeechRate(rate)
@@ -366,6 +386,16 @@ object VideoExporter {
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         codec.start()
+        // Tatsächlich verhandeltes Eingabe-Farbformat – entscheidet, wie rohe
+        // YUV-Puffer im Fallback-Pfad (ohne Eingabe-Image) angeordnet sind.
+        val semiPlanar = try {
+            val fmt = codec.inputFormat.getInteger(MediaFormat.KEY_COLOR_FORMAT)
+            fmt == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar ||
+                fmt == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar ||
+                (fmt and 0x7F000000.toInt()) != 0
+        } catch (e: Exception) {
+            true
+        }
         val samples = mutableListOf<Sample>()
         var outFormat: MediaFormat? = null
         var t = 0L
@@ -380,10 +410,17 @@ object VideoExporter {
                             inputDone = true
                         } else {
                             val image = codec.getInputImage(idx)
-                            if (image == null) {
-                                throw ExportException("Der Video-Encoder wird von diesem Gerät nicht unterstützt.")
+                            if (image != null) {
+                                fillYuv420(image, pixelsAt(t))
+                            } else {
+                                // Fallback: Manche Geräte liefern kein Eingabe-Image,
+                                // akzeptieren aber rohe YUV-Puffer (semi-planar oder planar).
+                                val buf = codec.getInputBuffer(idx)
+                                if (buf == null) {
+                                    throw ExportException("Der Video-Encoder wird von diesem Gerät nicht unterstützt.")
+                                }
+                                fillYuvBuffer(buf, pixelsAt(t), semiPlanar)
                             }
-                            fillYuv420(image, pixelsAt(t))
                             codec.queueInputBuffer(idx, 0, WIDTH * HEIGHT * 3 / 2, t, 0)
                             t += FRAME_INTERVAL_US
                         }
@@ -409,6 +446,43 @@ object VideoExporter {
             codec.release()
         }
         return Pair(outFormat ?: format, samples)
+    }
+
+    /** Füllt einen rohen YUV-Eingabepuffer (Fallback, wenn kein Eingabe-Image verfügbar ist). */
+    private fun fillYuvBuffer(buf: ByteBuffer, argb: IntArray, semiPlanar: Boolean) {
+        val y = ByteArray(WIDTH * HEIGHT)
+        val u = ByteArray(WIDTH * HEIGHT / 4)
+        val v = ByteArray(WIDTH * HEIGHT / 4)
+        for (h in 0 until HEIGHT) {
+            for (w in 0 until WIDTH) {
+                val c = argb[h * WIDTH + w]
+                val r = (c shr 16) and 0xff
+                val g = (c shr 8) and 0xff
+                val b = c and 0xff
+                y[h * WIDTH + w] = (((66 * r + 129 * g + 25 * b + 128) shr 8) + 16).toByte()
+            }
+        }
+        for (h in 0 until HEIGHT / 2) {
+            for (w in 0 until WIDTH / 2) {
+                val c = argb[(2 * h + 1) * WIDTH + (2 * w + 1)]
+                val r = (c shr 16) and 0xff
+                val g = (c shr 8) and 0xff
+                val b = c and 0xff
+                u[h * (WIDTH / 2) + w] = (((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128).toByte()
+                v[h * (WIDTH / 2) + w] = (((112 * r - 94 * g - 18 * b + 128) shr 8) + 128).toByte()
+            }
+        }
+        buf.clear()
+        buf.put(y)
+        if (semiPlanar) {
+            for (i in u.indices) {
+                buf.put(u[i])
+                buf.put(v[i])
+            }
+        } else {
+            buf.put(u)
+            buf.put(v)
+        }
     }
 
     /** Schreibt ARGB-Pixel in die YUV-Ebenen eines Encoder-Eingabildes. */
@@ -732,6 +806,7 @@ object VideoExporter {
         canvas.restore()
     }
 }
+
 
 
 

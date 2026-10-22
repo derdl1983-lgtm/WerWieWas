@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -79,7 +80,8 @@ fun HomeScreen(
     onCamera: () -> Unit,
     onGallery: () -> Unit,
     onHistory: () -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    onVideoArchive: () -> Unit = {}
 ) {
     LaunchedEffect(autoOpenCamera) {
         if (autoOpenCamera) {
@@ -274,6 +276,14 @@ fun HomeScreen(
                     modifier = Modifier.weight(1f)
                 )
             }
+            Spacer(Modifier.height(12.dp))
+
+            ActionCard(
+                icon = Icons.Outlined.VideoLibrary,
+                title = "Video-Archiv",
+                subtitle = "Alle erstellten Videos – hochladen auf YouTube, TikTok & Co.",
+                onClick = onVideoArchive
+            )
 
             // Analyse-Warteschlange: gemerkte Fotos automatisch/manuell nachsenden
             if (pending.isNotEmpty()) {
@@ -429,3 +439,4 @@ private fun ActionCard(
         }
     }
 }
+
