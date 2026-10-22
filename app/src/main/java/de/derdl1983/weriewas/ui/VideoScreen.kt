@@ -1258,7 +1258,8 @@ private fun exportAudioOnly(
         voiceA,
         voiceB,
         speed,
-        speechLang
+        speechLang,
+        base
     )
 }
 

@@ -1143,6 +1143,7 @@ object VideoExporter {
         voiceB: Voice?,
         rate: Float,
         speechLang: String = "de",
+        base: String = "WerWieWas-Erklaerung",
         onProgress: (Float) -> Unit = { }
     ): AudioExportResult {
         val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, null, speechLang) { p ->
