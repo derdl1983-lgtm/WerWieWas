@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Settings
@@ -81,7 +82,8 @@ fun HomeScreen(
     onGallery: () -> Unit,
     onHistory: () -> Unit,
     onSettings: () -> Unit,
-    onVideoArchive: () -> Unit = {}
+    onVideoArchive: () -> Unit = {},
+    onAiProfile: () -> Unit = {}
 ) {
     LaunchedEffect(autoOpenCamera) {
         if (autoOpenCamera) {
@@ -283,6 +285,14 @@ fun HomeScreen(
                 title = "Video-Archiv",
                 subtitle = "Alle erstellten Videos – hochladen auf YouTube, TikTok & Co.",
                 onClick = onVideoArchive
+            )
+            Spacer(Modifier.height(12.dp))
+
+            ActionCard(
+                icon = Icons.Outlined.AutoAwesome,
+                title = "KI-Profil",
+                subtitle = "Erzählstil, Zielgruppe, Ton & Sprache festlegen",
+                onClick = onAiProfile
             )
 
             // Analyse-Warteschlange: gemerkte Fotos automatisch/manuell nachsenden

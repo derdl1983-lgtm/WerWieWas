@@ -59,34 +59,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** Auswahlliste einer Profil-Eigenschaft (aktuelle Wahl ist hervorgehoben). */
-@Composable
-private fun ProfileChoice(
-    title: String,
-    options: List<Pair<String, String>>,
-    current: String,
-    onSelect: (String) -> Unit
-) {
-    Text(
-        title,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary
-    )
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        options.forEach { (key, label) ->
-            if (key == current) {
-                Button(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text(label) }
-            } else {
-                OutlinedButton(
-                    onClick = { onSelect(key) },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text(label) }
-            }
-        }
-    }
-}
-
-/** Einstellungen: Stimmen (System + Edge-TTS), KI-Profil & Antwortstil, KI-Anbieter, Daten verwalten, Datenschutz. */
+/** Einstellungen: Stimmen (System + Edge-TTS), KI-Anbieter, Daten verwalten, Datenschutz. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onClose: () -> Unit) {
@@ -118,35 +91,6 @@ fun SettingsScreen(onClose: () -> Unit) {
             if (granted) "Schnellzugriff aktiviert." else "Ohne Benachrichtigungs-Freigabe nicht möglich.",
             Toast.LENGTH_SHORT
         ).show()
-    }
-
-    // KI-Profil & Antwortstil
-    var audience by rememberSaveable { mutableStateOf(prefs.getString("ai_audience", "all") ?: "all") }
-    var level by rememberSaveable { mutableStateOf(prefs.getString("ai_level", "laie") ?: "laie") }
-    var tone by rememberSaveable { mutableStateOf(prefs.getString("ai_tone", "sachlich") ?: "sachlich") }
-    var role by rememberSaveable { mutableStateOf(prefs.getString("ai_role", "erzaehler") ?: "erzaehler") }
-    var custom by rememberSaveable { mutableStateOf(prefs.getString("ai_custom", "") ?: "") }
-    var language by rememberSaveable { mutableStateOf(prefs.getString("ai_language", "de") ?: "de") }
-
-    fun saveProfileValue(key: String, value: String) {
-        prefs.edit().putString(key, value).apply()
-    }
-
-    fun resetProfile() {
-        audience = "all"
-        level = "laie"
-        tone = "sachlich"
-        role = "erzaehler"
-        custom = ""
-        language = "de"
-        prefs.edit()
-            .remove("ai_audience")
-            .remove("ai_level")
-            .remove("ai_tone")
-            .remove("ai_role")
-            .remove("ai_custom")
-            .remove("ai_language")
-            .apply()
     }
 
     // Verfügbare deutsche Stimmen der Sprachausgabe laden
@@ -420,115 +364,6 @@ fun SettingsScreen(onClose: () -> Unit) {
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary
                         )
-                    }
-                }
-            }
-
-            // ---------- KI-Profil & Antwortstil ----------
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        "KI-Profil & Antwortstil",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        "Hier legst du fest, wie dir die KI antwortet: Zielgruppe, Vorwissen, Ton, " +
-                            "Erzählstil und Antwort-Sprache (z. B. für den Urlaub oder zum Sprachenlernen). " +
-                            "Zusätzlich kannst du eigene Hinweise hinterlegen " +
-                            "(z. B. Interessen, gewünschte Anrede, Lieblingsthemen). " +
-                            "Gilt für jede Online-Analyse deiner Fotos.",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    ProfileChoice(
-                        "Erzählstil",
-                        listOf(
-                            "erzaehler" to "Erzähler (Standard)",
-                            "detektiv" to "Detektiv",
-                            "professor" to "Professor",
-                            "freund" to "Guter Freund"
-                        ),
-                        role
-                    ) {
-                        role = it
-                        saveProfileValue("ai_role", it)
-                    }
-                    ProfileChoice(
-                        "Zielgruppe",
-                        listOf(
-                            "all" to "Erwachsene",
-                            "kind" to "Kinder (8-12 Jahre)",
-                            "jugend" to "Jugendliche",
-                            "senior" to "Senioren"
-                        ),
-                        audience
-                    ) {
-                        audience = it
-                        saveProfileValue("ai_audience", it)
-                    }
-                    ProfileChoice(
-                        "Vorwissen",
-                        listOf(
-                            "laie" to "Laie",
-                            "fortgeschritten" to "Fortgeschritten",
-                            "experte" to "Experte"
-                        ),
-                        level
-                    ) {
-                        level = it
-                        saveProfileValue("ai_level", it)
-                    }
-                    ProfileChoice(
-                        "Ton",
-                        listOf(
-                            "sachlich" to "Sachlich",
-                            "lustig" to "Lustig",
-                            "verruckt" to "Verrückte Geschichte (frei erfunden)",
-                            "kurz" to "Kurz & knackig",
-                            "ausfuehrlich" to "Ausführlich"
-                        ),
-                        tone
-                    ) {
-                        tone = it
-                        saveProfileValue("ai_tone", it)
-                    }
-                    ProfileChoice(
-                        "Antwort-Sprache",
-                        listOf(
-                            "de" to "Deutsch",
-                            "en" to "English",
-                            "fr" to "Français (Französisch)",
-                            "es" to "Español (Spanisch)",
-                            "tr" to "Türkçe (Türkisch)",
-                            "it" to "Italiano (Italienisch)"
-                        ),
-                        language
-                    ) {
-                        language = it
-                        saveProfileValue("ai_language", it)
-                    }
-                    OutlinedTextField(
-                        value = custom,
-                        onValueChange = { custom = it },
-                        label = { Text("Eigene Hinweise (z. B. Interessen, Anrede, Themen)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                saveProfileValue("ai_custom", custom.trim())
-                                Toast.makeText(context, "KI-Profil gespeichert.", Toast.LENGTH_SHORT).show()
-                            }
-                        ) { Text("Profil speichern") }
-                        OutlinedButton(
-                            onClick = {
-                                resetProfile()
-                                Toast.makeText(context, "KI-Profil zurückgesetzt.", Toast.LENGTH_SHORT).show()
-                            }
-                        ) { Text("Zurücksetzen") }
                     }
                 }
             }

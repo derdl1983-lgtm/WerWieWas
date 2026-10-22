@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
+import de.derdl1983.weriewas.ui.AiProfileScreen
 import de.derdl1983.weriewas.ui.AnalyzeScreen
 import de.derdl1983.weriewas.ui.HistoryScreen
 import de.derdl1983.weriewas.ui.HomeScreen
@@ -39,6 +40,7 @@ sealed interface Screen {
     data object History : Screen
     data class Video(val discoveryId: String, val fromHistory: Boolean = false) : Screen
     data object VideoArchive : Screen
+    data object AiProfile : Screen
     data object Settings : Screen
 }
 
@@ -143,6 +145,7 @@ class MainActivity : ComponentActivity() {
                 outState.putBoolean(KEY_FLAG, s.fromHistory)
             }
             Screen.VideoArchive -> outState.putString(KEY_SCREEN, "videoarchive")
+            Screen.AiProfile -> outState.putString(KEY_SCREEN, "aiprofile")
             Screen.Settings -> outState.putString(KEY_SCREEN, "settings")
         }
     }
@@ -154,6 +157,7 @@ class MainActivity : ComponentActivity() {
         kind == "video" && arg != null -> Screen.Video(arg, flag)
         kind == "settings" -> Screen.Settings
         kind == "videoarchive" -> Screen.VideoArchive
+        kind == "aiprofile" -> Screen.AiProfile
         else -> Screen.Home
     }
 
@@ -231,7 +235,8 @@ class MainActivity : ComponentActivity() {
                 onGallery = { openGallery() },
                 onHistory = { currentScreen = Screen.History },
                 onSettings = { currentScreen = Screen.Settings },
-                onVideoArchive = { currentScreen = Screen.VideoArchive }
+                onVideoArchive = { currentScreen = Screen.VideoArchive },
+                onAiProfile = { currentScreen = Screen.AiProfile }
             )
             is Screen.Analyze -> AnalyzeScreen(
                 imagePath = screen.path,
@@ -253,6 +258,9 @@ class MainActivity : ComponentActivity() {
                 onClose = { currentScreen = Screen.Result(screen.discoveryId, screen.fromHistory) }
             )
             Screen.VideoArchive -> VideoArchiveScreen(
+                onClose = { currentScreen = Screen.Home }
+            )
+            Screen.AiProfile -> AiProfileScreen(
                 onClose = { currentScreen = Screen.Home }
             )
             Screen.Settings -> SettingsScreen(

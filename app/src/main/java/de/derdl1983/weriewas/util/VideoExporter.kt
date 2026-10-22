@@ -10,6 +10,7 @@ import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
@@ -122,7 +123,7 @@ object VideoExporter {
 
     /**
      * Erstellt das Video und gibt eine Beschreibung des Speicherorts zurück.
-     * onProgress wird mit (erledigte Schritte, Gesamtschritte) aufgerufen.
+     * onProgress wird laufend mit dem Gesamt-Fortschritt (0.0 bis 1.0) aufgerufen.
      * preAudio: optional je Szene eine fertige WAV-Datei (z. B. Edge-TTS);
      * fehlende Einträge werden über die Android-Sprachausgabe erzeugt.
      * videoWidth/videoHeight: Auflösung (z. B. 1280x720/1920x1080 für YouTube-Querformat);
@@ -142,7 +143,7 @@ object VideoExporter {
         wantSrt: Boolean = false,
         burnedSubs: Boolean = false,
         backgroundMusic: Boolean = true,
-        onProgress: (done: Int, total: Int) -> Unit
+        onProgress: (progress: Float) -> Unit
     ): ExportResult {
         if (slides.isEmpty()) throw ExportException("Keine Inhalte zum Export vorhanden.")
         WIDTH = videoWidth
@@ -151,14 +152,16 @@ object VideoExporter {
         // Echte App-Logo-Marke (gleicher Vektor wie das Launcher-Icon) für
         // Intro-/Outro-Karte und Wasserzeichen laden.
         logoMark = context.getDrawable(R.drawable.ic_launcher_foreground)
-        val totalSteps = slides.size + 5
+        onProgress(0.02f)
         val introUs = (INTRO_SECONDS * 1_000_000).toLong()
         val outroUs = (OUTRO_SECONDS * 1_000_000).toLong()
         val fadeUs = (FADE_SECONDS * 1_000_000).toLong()
         val silenceUs = (SILENCE_SECONDS * 1_000_000).toLong()
 
-        val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, preAudio)
-        onProgress(slides.size, totalSteps)
+        val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, preAudio) { p ->
+            onProgress(0.05f + 0.25f * p.coerceIn(0f, 1f))
+        }
+        onProgress(0.30f)
 
         // Ton-Zeitlinie: Intro-Pause, dann je Szene Sprachausgabe + Anzeige-Pause, dann Outro-Pause.
         // Jede Szene bekommt eine Mindest-Anzeigedauer nach Textlänge, damit der komplette
@@ -188,7 +191,7 @@ object VideoExporter {
 
         // Hintergrundmusik + Sprachausgabe zu einer Stereospur mischen
         val stereoPcm = mixAudio(monoPcm, durationUs, speechRanges, backgroundMusic)
-        onProgress(slides.size + 1, totalSteps)
+        onProgress(0.32f)
 
         val audio = try {
             encodeAudio(stereoPcm, TARGET_RATE, CHANNELS)
@@ -197,21 +200,21 @@ object VideoExporter {
         } catch (e: Exception) {
             throw ExportException("Tonspur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
         }
-        onProgress(slides.size + 2, totalSteps)
+        onProgress(0.35f)
 
         // Szenen-Grafiken vorbereiten (Ebenen für Zoom, Text-Fade, Untertitel).
         // Eingebrannte Untertitel laufen über das komplette Anzeige-Fenster der Szene.
         val gfx = try {
             slides.mapIndexed { i, s ->
-                renderSlideGfx(s, i, slides.size, burnedSubs, sceneDur[i] - fadeUs / 2)
+                val g = renderSlideGfx(s, i, slides.size, burnedSubs, sceneDur[i] - fadeUs / 2)
+                onProgress(0.35f + 0.10f * (i + 1f) / slides.size)
+                g
             }
         } catch (e: ExportException) {
             throw e
         } catch (e: Exception) {
             throw ExportException("Szenen konnten nicht vorbereitet werden: " + (e.message ?: e.javaClass.simpleName))
         }
-        onProgress(slides.size + 3, totalSteps)
-
         // Frame-Renderer: Intro-Karte, Überblendungen, Ken-Burns-Zoom, Outro-Karte
         val bmpA = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
         val cA = Canvas(bmpA)
@@ -419,14 +422,14 @@ object VideoExporter {
         }
 
         val video = try {
-            encodeVideo(durationUs) { t -> renderFrame(t) }
+            encodeVideo(durationUs, { t -> renderFrame(t) }) { p ->
+                onProgress(0.45f + 0.50f * p.coerceIn(0f, 1f))
+            }
         } catch (e: ExportException) {
             throw e
         } catch (e: Exception) {
             throw ExportException("Videospur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
         }
-        onProgress(slides.size + 4, totalSteps)
-
         val file = try {
             mux(context, audio, video)
         } catch (e: ExportException) {
@@ -434,10 +437,11 @@ object VideoExporter {
         } catch (e: Exception) {
             throw ExportException("Video-Datei konnte nicht erstellt werden: " + (e.message ?: e.javaClass.simpleName))
         }
+        onProgress(0.97f)
         val videoBase = file.name.removeSuffix(".mp4")
         val videoResult = saveVideo(context, file)
         val srtUri = if (wantSrt) saveSrt(context, videoBase, buildSrt(slides, speechRanges)) else null
-        onProgress(totalSteps, totalSteps)
+        onProgress(1f)
         val message = if (srtUri != null) {
             videoResult.message + " – Untertitel (SRT) gespeichert"
         } else {
@@ -453,10 +457,12 @@ object VideoExporter {
         voiceA: Voice?,
         voiceB: Voice?,
         rate: Float,
-        preAudio: List<File?>?
+        preAudio: List<File?>?,
+        progress: (Float) -> Unit = { }
     ): List<SlideAudio> {
         val provided: List<File?> = slides.mapIndexed { i, _ -> preAudio?.getOrNull(i) }
         if (provided.isNotEmpty() && provided.all { it != null }) {
+            progress(1f)
             return provided.map { f ->
                 if (f == null) {
                     SlideAudio(ByteArray(0), TARGET_RATE, 1)
@@ -473,6 +479,7 @@ object VideoExporter {
             if (!initLatch.await(15, TimeUnit.SECONDS)) {
                 // Keine Sprachausgabe verfügbar: Das Video wird ohne Ton exportiert
                 // (jede Szene erhält nur die kurze Sprechpause als Dauer).
+                progress(1f)
                 return slides.map { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
             }
             tts.language = Locale.GERMANY
@@ -514,6 +521,7 @@ object VideoExporter {
                     .getOrElse { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
                 result.add(audio)
                 wav.delete()
+                progress((index + 1f) / slides.size)
             }
             return result
         } finally {
@@ -751,7 +759,7 @@ object VideoExporter {
     }
 
     /** Encodiert die animierten Videoframes als H.264-Videospur (24 Bilder/s). */
-    private fun encodeVideo(durationUs: Long, pixelsAt: (Long) -> IntArray): Pair<MediaFormat, List<Sample>> {
+    private fun encodeVideo(durationUs: Long, pixelsAt: (Long) -> IntArray, progress: (Float) -> Unit = { }): Pair<MediaFormat, List<Sample>> {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, WIDTH, HEIGHT)
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
         format.setInteger(MediaFormat.KEY_BIT_RATE, WIDTH * HEIGHT * 3)
@@ -773,6 +781,7 @@ object VideoExporter {
         val samples = mutableListOf<Sample>()
         var outFormat: MediaFormat? = null
         var t = 0L
+        var lastPf = 0f
         var inputDone = false
         try {
             while (true) {
@@ -796,6 +805,11 @@ object VideoExporter {
                                 fillYuvBuffer(buf, pixelsAt(t), semiPlanar)
                             }
                             codec.queueInputBuffer(idx, 0, WIDTH * HEIGHT * 3 / 2, t, 0)
+                            val pf = (t.toFloat() / durationUs.toFloat()).coerceIn(0f, 1f)
+                            if (pf - lastPf >= 0.005f) {
+                                lastPf = pf
+                                progress(pf)
+                            }
                             t += FRAME_INTERVAL_US
                         }
                     }
@@ -1020,6 +1034,15 @@ object VideoExporter {
         val bg = Paint()
         bg.shader = LinearGradient(0f, 0f, 0f, HEIGHT.toFloat(), colors[0], colors[1], Shader.TileMode.CLAMP)
         canvas.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bg)
+        // Dezente Vignette: dunkelt die Ränder ab und gibt dem Bild Tiefe
+        val vignette = Paint()
+        vignette.shader = RadialGradient(
+            WIDTH / 2f, HEIGHT / 2f, maxOf(WIDTH, HEIGHT) * 0.75f,
+            intArrayOf(Color.TRANSPARENT, Color.argb(70, 0, 0, 0)),
+            floatArrayOf(0.55f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), vignette)
 
         var top = if (HEIGHT > WIDTH) 150f * scale else 90f * scale
         var photo: Bitmap? = null
@@ -1068,7 +1091,13 @@ object VideoExporter {
         drawSceneChip(canvas, index, totalSlides)
         drawWatermark(canvas)
 
-        // Textebene: Titel (und ohne eingebrannte Untertitel auch der Fließtext)
+        // Textebene: Titel (und ohne eingebrannte Untertitel auch der Fließtext),
+        // liegt auf einem abgedunkelten Glas-Panel mit blauem Marken-Akzent (Profi-Look).
+        val panelPadTop = 28f * scale
+        val panelPadBottom = 30f * scale
+        val accentH = 6f * scale
+        val accentGap = 18f * scale
+        val bodyGap = 46f * scale
         val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
         titlePaint.textSize = 62f * scale
         titlePaint.isFakeBoldText = true
@@ -1091,7 +1120,7 @@ object VideoExporter {
         if (!burnedSubs && slide.text.isNotBlank()) {
             var bodySize = 42f * scale
             var bl = makeBody(bodySize)
-            while (top + titleLayout.height + 60f * scale + bl.height > HEIGHT - 160f * scale && bodySize > 26f * scale) {
+            while (top + panelPadTop + accentH + accentGap + titleLayout.height + bodyGap + bl.height + panelPadBottom > HEIGHT - 140f * scale && bodySize > 26f * scale) {
                 bodySize -= 4f * scale
                 bl = makeBody(bodySize)
             }
@@ -1100,18 +1129,36 @@ object VideoExporter {
         val textTop = top
         val body = bodyLayout
         val layerH = (titleLayout.height +
-            (if (body != null) 60f * scale + body.height else 0f) + 8f)
+            (if (body != null) bodyGap + body.height else 0f) +
+            panelPadTop + accentH + accentGap + panelPadBottom)
             .toInt().coerceAtLeast(1)
             .coerceAtMost((HEIGHT - textTop).toInt().coerceAtLeast(1))
         val textLayer = Bitmap.createBitmap(WIDTH, layerH, Bitmap.Config.ARGB_8888)
         val tc = Canvas(textLayer)
+        // Glas-Panel hinter dem Text: deutlich bessere Lesbarkeit auf jedem Hintergrund
+        val panelPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        panelPaint.color = Color.argb(80, 6, 10, 26)
+        tc.drawRoundRect(
+            RectF(30f * scale, 0f, WIDTH - 30f * scale, layerH.toFloat()),
+            26f * scale, 26f * scale, panelPaint
+        )
+        // Blauer Marken-Akzentbalken über dem Titel
+        val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        accentPaint.color = Color.rgb(66, 133, 244)
+        tc.drawRoundRect(
+            RectF(WIDTH / 2f - 30f * scale, panelPadTop, WIDTH / 2f + 30f * scale, panelPadTop + accentH),
+            accentH / 2f, accentH / 2f, accentPaint
+        )
         tc.save()
-        tc.translate((WIDTH - titleLayout.width) / 2f, 0f)
+        tc.translate((WIDTH - titleLayout.width) / 2f, panelPadTop + accentH + accentGap)
         titleLayout.draw(tc)
         tc.restore()
         if (body != null) {
             tc.save()
-            tc.translate((WIDTH - body.width) / 2f, titleLayout.height + 60f * scale)
+            tc.translate(
+                (WIDTH - body.width) / 2f,
+                panelPadTop + accentH + accentGap + titleLayout.height + bodyGap
+            )
             body.draw(tc)
             tc.restore()
         }

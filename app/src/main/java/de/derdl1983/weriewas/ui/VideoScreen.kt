@@ -185,6 +185,7 @@ fun VideoScreen(
     var speed by remember { mutableStateOf(1f) }
     var exporting by remember { mutableStateOf(false) }
     var exportProgress by remember { mutableStateOf("") }
+    var exportFrac by remember { mutableStateOf(0f) }
     var exportMessage by remember { mutableStateOf<String?>(null) }
     var exportedUri by remember { mutableStateOf<Uri?>(null) }
     var exportedSrt by remember { mutableStateOf<Uri?>(null) }
@@ -719,6 +720,7 @@ fun VideoScreen(
                         exportedUri = null
                         exportedSrt = null
                         exportProgress = ""
+                        exportFrac = 0f
                         playing = false
                         scope.launch {
                             val result = withContext(Dispatchers.IO) {
@@ -779,7 +781,10 @@ fun VideoScreen(
                                         wantSrt,
                                         burnedSubs,
                                         wantMusic
-                                    ) { d, t -> exportProgress = "Schritt " + d + " von " + t }
+                                    ) { p ->
+                                        exportFrac = p.coerceIn(0f, 1f)
+                                        exportProgress = (p * 100).toInt().toString() + " %"
+                                    }
                                 } catch (e: Exception) {
                                     de.derdl1983.weriewas.WerWieWasApp.logExportError(context, e)
                                     VideoExporter.ExportResult(
@@ -805,10 +810,25 @@ fun VideoScreen(
                 if (exporting) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.size(8.dp))
-                    Text(if (exportProgress.isBlank()) "Exportiere …" else "Exportiere … (" + exportProgress + ")")
+                    Text("Video wird erstellt …")
                 } else {
                     Text("Als Video speichern (MP4)")
                 }
+            }
+            if (exporting) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { exportFrac },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Fortschritt: " + (if (exportProgress.isBlank()) "0 %" else exportProgress) +
+                        " – Text, Szenen, Intro & Outro werden eingebaut. Bitte App offen lassen.",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
             }
             val message = exportMessage
             if (message != null) {
