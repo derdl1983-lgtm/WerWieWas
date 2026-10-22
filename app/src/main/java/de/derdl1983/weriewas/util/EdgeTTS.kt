@@ -133,6 +133,18 @@ object EdgeTTS {
         ALL_VOICES.firstOrNull { it.id == id }?.label ?: id
 
     /**
+     * Räumt einen Anzeigetext für die Sprachausgabe auf: entfernt
+     * Aufzählungszeichen wie „•“, „-“ oder „*“ am Zeilenanfang, damit sie
+     * nicht mit vorgelesen werden. Anzeigetext und Untertitel bleiben
+     * davon unberührt – die Bereinigung gilt nur dem gesprochenen Text.
+     */
+    fun speakableText(text: String): String =
+        text.replace(Regex("(?m)^[ \\t]*[•·\\-–*]+[ \\t]+"), "")
+            .replace("•", "")
+            .replace(Regex("[ \\t]{2,}"), " ")
+            .trim()
+
+    /**
      * Löscht abgelegte Sprachdateien aus dem App-Cache, die älter als
      * 24 Stunden sind. Wird beim App-Start aufgerufen.
      */
@@ -549,7 +561,7 @@ object EdgeTTS {
                         + "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},"
                         + "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}")
                     webSocket.send(config)
-                    var escaped = text
+                    var escaped = speakableText(text)
                         .replace("&", "&amp;")
                         .replace("<", "&lt;")
                         .replace(">", "&gt;")

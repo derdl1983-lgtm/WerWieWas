@@ -280,7 +280,7 @@ object OnlineAnalyzer {
 
     fun isConfigured(context: Context): Boolean = loadConfig(context) != null
 
-    private val PROMPT = "Du bist ein hilfreicher Erklärassistent für die App „Wer Wie Was“.\nAnalysiere das Foto (bei mehreren Fotos: verschiedene Ansichten desselben Objekts – nutze alle Bilder gemeinsam für eine möglichst genaue Erkennung) und beantworte: Was ist das, wie funktioniert es, wofür wird es verwendet?\nAntworte AUSSCHLIESSLICH mit einem JSON-Objekt (ohne Markdown, ohne Erklärtext) mit genau diesen Feldern:\n{\"title\": \"Kurzer Name des Objekts\", \"category\": \"Kategorie (z. B. Haushalt, Werkzeug, Elektronik, Natur, Lebensmittel, Sport, Kleidung, Verkehr, Medizin)\", \"summary\": \"2-3 Sätze: Was ist das Objekt?\", \"howItWorks\": \"2-4 Sätze: Wie funktioniert es?\", \"usage\": \"1-3 Sätze: Wofür wird es typischerweise verwendet?\", \"practical\": \"1-2 praktische Tipps für den Alltag\", \"facts\": [\"2-3 kurze interessante Fakten\"], \"safety\": \"Sicherheitshinweise (bei Lebensmitteln, Pilzen, Medikamenten, Chemikalien, Tieren, Werkzeugen: deutliche Warnung)\", \"uncertain\": true falls du dir nicht sicher bist, sonst false}"
+    private val PROMPT = "Du bist ein hilfreicher Erklärassistent für die App „Wer Wie Was“.\nAnalysiere das Foto (bei mehreren Fotos: verschiedene Ansichten desselben Objekts – nutze alle Bilder gemeinsam für eine möglichst genaue Erkennung) und beantworte: Was ist das, wie funktioniert es, wofür wird es verwendet?\nAntworte AUSSCHLIESSLICH mit einem JSON-Objekt (ohne Markdown, ohne Erklärtext) mit genau diesen Feldern:\n{\"title\": \"Kurzer Name des Objekts\", \"category\": \"Kategorie (z. B. Haushalt, Werkzeug, Elektronik, Natur, Lebensmittel, Sport, Kleidung, Verkehr, Medizin)\", \"summary\": \"2-3 Sätze: Was ist das Objekt?\", \"howItWorks\": \"2-4 Sätze: Wie funktioniert es?\", \"usage\": \"1-3 Sätze: Wofür wird es typischerweise verwendet?\", \"practical\": \"1-2 praktische Tipps für den Alltag\", \"facts\": [\"2-3 kurze interessante Fakten\"], \"safety\": \"Sicherheitshinweise (bei Lebensmitteln, Pilzen, Medikamenten, Chemikalien, Tieren, Werkzeugen: deutliche Warnung)\", \"uncertain\": true falls du dir nicht sicher bist, sonst false}\nWichtig: Alle Texte werden in der App zusätzlich laut vorgelesen (Sprachausgabe im Erklärvideo). Schreibe deshalb fließende, gesprochene Sätze: keine Aufzählungszeichen, keine Emojis, keine Abkürzungen („zum Beispiel“ statt „z.B.“, „etwa“ statt „ca.“), keine Klammern mit Beifügungen und keine Fachkürzel. Zahlen schreibe so, dass sie sich beim Vorlesen natürlich anhören."
 
     private fun promptFor(config: ProviderConfig): String {
         val lang = if (config.language == "de") {
@@ -695,6 +695,7 @@ object OnlineAnalyzer {
         return base.copy(links = KnowledgeBase.buildPublicLinks(base))
     }
 }
+
 
 
 

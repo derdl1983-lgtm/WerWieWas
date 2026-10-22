@@ -316,7 +316,7 @@ fun VideoScreen(
             engine.setPitch(1f)
         }
         engine.speak(
-            slide.title + ". " + slide.text,
+            EdgeTTS.speakableText(slide.title) + ". " + EdgeTTS.speakableText(slide.text),
             TextToSpeech.QUEUE_FLUSH,
             Bundle().apply {
                 putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "slide_" + page)

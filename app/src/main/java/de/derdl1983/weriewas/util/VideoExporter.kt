@@ -225,6 +225,7 @@ object VideoExporter {
         // kurzer) Sprachausgabe.
         val pcmOut = ByteArrayOutputStream()
         val speechRanges = mutableListOf<LongRange>()
+        val sceneSpans = mutableListOf<LongRange>()
         val sceneStart = LongArray(slides.size)
         val sceneDur = LongArray(slides.size)
         pcmOut.write(ByteArray((INTRO_SECONDS * TARGET_RATE * 2).toInt()))
@@ -237,6 +238,7 @@ object VideoExporter {
             pcmOut.write(mono)
             sceneStart[i] = cursor
             sceneDur[i] = monoUs + padUs + fadeUs / 2
+            sceneSpans.add(cursor until (cursor + sceneDur[i]))
             if (monoUs > 0) speechRanges.add(cursor until (cursor + monoUs))
             cursor += monoUs + padUs
             pcmOut.write(ByteArray((padUs * TARGET_RATE * 2L / 1_000_000L).toInt()))
@@ -263,7 +265,7 @@ object VideoExporter {
             }
             onProgress(0.35f)
             if (audioCacheFile != null) {
-                saveTrackCache(audioCacheFile, MediaFormat.MIMETYPE_AUDIO_AAC, enc.first, enc.second, durationUs, speechRanges)
+                saveTrackCache(audioCacheFile, MediaFormat.MIMETYPE_AUDIO_AAC, enc.first, enc.second, durationUs, sceneSpans)
             }
             enc
         }
@@ -349,9 +351,12 @@ object VideoExporter {
             val p = g.photo
             val r = g.photoRect
             if (p != null && r != null) {
-                // Ken-Burns-Zoom: Foto wird im Lauf der Szene leicht herangeführt
+                // Ken-Burns-Zoom: Richtung wechselt pro Szene – gerade Szenen
+                // zoomen leicht heran, ungerale Szenen leicht heraus. Das gibt
+                // dem Video visuelle Abwechslung statt einer starren
+                // Einheitsbewegung auf jedem Bild.
                 val prog = ((t - sceneStart[i]).toFloat() / sceneDur[i].toFloat()).coerceIn(0f, 1f)
-                val z = 1f + ZOOM_AMOUNT * prog
+                val z = if (i % 2 == 0) 1f + ZOOM_AMOUNT * prog else 1f + ZOOM_AMOUNT * (1f - prog)
                 val clip = Path()
                 clip.addRoundRect(r, 18f * scale, 18f * scale, Path.Direction.CW)
                 c.save()
@@ -520,7 +525,7 @@ object VideoExporter {
         onProgress(0.97f)
         val videoBase = file.name.removeSuffix(".mp4")
         val videoResult = saveVideo(context, file)
-        val srtUri = if (wantSrt) saveSrt(context, videoBase, buildSrt(slides, speechRanges)) else null
+        val srtUri = if (wantSrt) saveSrt(context, videoBase, buildSrt(slides, sceneSpans)) else null
         // Automatisches Video-Cover (Thumbnail) für YouTube/TikTok mitspeichern
         val thumbUri = runCatching { saveThumb(context, videoBase, slides.first()) }.getOrNull()
         onProgress(1f)
@@ -594,7 +599,7 @@ object VideoExporter {
                     override fun onStart(utteranceId: String?) { }
                 })
                 val ok = tts.synthesizeToFile(
-                    slide.title + ". " + slide.text,
+                    EdgeTTS.speakableText(slide.title) + ". " + EdgeTTS.speakableText(slide.text),
                     Bundle().apply {
                         putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "exp" + index)
                     },
@@ -1240,15 +1245,53 @@ object VideoExporter {
     }
 
     /** Baut aus Szenen und Zeitbereichen den Inhalt einer SRT-Untertiteldatei. */
+    /**
+     * Baut die SRT-Untertitel: satzweise Cues, zeitlich proportional über die
+     * Szene verteilt (gleiche Häppchen-Logik wie die eingebrannten Untertitel)
+     * – statt einer einzigen Riesentafel pro Szene, die YouTube & Co. nur als
+     * wandelnden Textblock anzeigen könnten.
+     */
     private fun buildSrt(slides: List<SlideData>, ranges: List<LongRange>): String {
         val sb = StringBuilder()
+        var cue = 1
         for (i in slides.indices) {
             val range = ranges.getOrNull(i) ?: continue
-            sb.append(i + 1).append('\n')
-            sb.append(srtTime(range.first)).append(" --> ").append(srtTime(range.last)).append('\n')
-            sb.append(slides[i].title).append('\n')
-            sb.append(slides[i].text).append('\n')
-            sb.append('\n')
+            val spanUs = range.last - range.first
+            if (spanUs <= 0) continue
+            val chunks = mutableListOf<String>()
+            chunks.add(slides[i].title)
+            for (line in slides[i].text.split('\n')) {
+                val trimmed = line.trim()
+                if (trimmed.isEmpty()) continue
+                var cur = ""
+                for (raw in trimmed.split(Regex("(?<=[.!?…])\\s+"))) {
+                    val p = raw.trim()
+                    if (p.isEmpty()) continue
+                    if (cur.isNotEmpty() && cur.length + p.length + 1 > 80) {
+                        chunks.add(cur)
+                        cur = p
+                    } else {
+                        cur = if (cur.isEmpty()) p else cur + " " + p
+                    }
+                }
+                if (cur.isNotEmpty()) chunks.add(cur)
+            }
+            if (chunks.isEmpty()) continue
+            val totalLen = chunks.sumOf { it.length }.coerceAtLeast(1)
+            var t = range.first
+            for (ch in chunks) {
+                val d = spanUs * ch.length / totalLen
+                val start = t
+                val end = (t + d).coerceAtMost(range.last)
+                if (end > start) {
+                    sb.append(cue).append('\n')
+                    sb.append(srtTime(start)).append(" --> ").append(srtTime(end)).append('\n')
+                    sb.append(ch).append('\n')
+                    sb.append('\n')
+                    cue++
+                }
+                t += d
+            }
         }
         return sb.toString()
     }
@@ -1582,6 +1625,11 @@ object VideoExporter {
     // ---------- Absturz-Schutz: Cache encodierter Spuren ----------
 
     /** Fertig encodierte Ton- oder Videospur mit den nötigen Zusatzinformationen. */
+    /**
+     * Fertig encodierte Spur aus dem Cache. `speechRanges` enthält eine
+     * Spanne pro Szene (Anzeige-Fenster inklusive Sprechpausen) – die
+     * Grundlage für die satzweisen SRT-Untertitel.
+     */
     private class TrackCache(
         val mime: String,
         val format: MediaFormat,
@@ -1605,6 +1653,10 @@ object VideoExporter {
         speechLang: String = "de"
     ): String {
         var h = 17
+        // Cache-Format-Version: SRT nutzt jetzt Szenen-Spannen (eine pro
+        // Szene, inklusive Pausen) statt reiner Sprech-Spannen – alte Caches
+        // mit der bisherigen Bedeutung werden dadurch sicher verworfen.
+        h = h * 31 + 2
         for (s in slides) {
             h = h * 31 + s.title.hashCode()
             h = h * 31 + s.text.hashCode()
@@ -1961,3 +2013,4 @@ object VideoExporter {
         canvas.restore()
     }
 }
+
