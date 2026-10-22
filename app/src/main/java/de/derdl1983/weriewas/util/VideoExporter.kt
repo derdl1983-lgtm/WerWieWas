@@ -13,6 +13,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
+import android.graphics.drawable.Drawable
 import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -30,6 +31,7 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import androidx.core.content.FileProvider
+import de.derdl1983.weriewas.R
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
@@ -88,6 +90,7 @@ object VideoExporter {
     private var WIDTH = 720
     private var HEIGHT = 1280
     private var scale = 1f
+    private var logoMark: Drawable? = null
     private const val FRAME_INTERVAL_US = 41666L // 24 Bilder/s für weiche Überblendungen
     private const val TARGET_RATE = 44100       // Studio-Audioqualität
     private const val CHANNELS = 2              // Stereo
@@ -145,6 +148,9 @@ object VideoExporter {
         WIDTH = videoWidth
         HEIGHT = videoHeight
         scale = minOf(WIDTH, HEIGHT) / 720f
+        // Echte App-Logo-Marke (gleicher Vektor wie das Launcher-Icon) für
+        // Intro-/Outro-Karte und Wasserzeichen laden.
+        logoMark = context.getDrawable(R.drawable.ic_launcher_foreground)
         val totalSteps = slides.size + 5
         val introUs = (INTRO_SECONDS * 1_000_000).toLong()
         val outroUs = (OUTRO_SECONDS * 1_000_000).toLong()
@@ -154,34 +160,31 @@ object VideoExporter {
         val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, preAudio)
         onProgress(slides.size, totalSteps)
 
-        // Ton-Zeitlinie: Intro-Pause, dann je Szene Sprachausgabe + Sprechpause, dann Outro-Pause
-        val silence = ByteArray((SILENCE_SECONDS * TARGET_RATE * 2).toInt())
+        // Ton-Zeitlinie: Intro-Pause, dann je Szene Sprachausgabe + Anzeige-Pause, dann Outro-Pause.
+        // Jede Szene bekommt eine Mindest-Anzeigedauer nach Textlänge, damit der komplette
+        // Text und die Themenbilder sicher sichtbar sind – auch ohne (oder bei sehr
+        // kurzer) Sprachausgabe.
         val pcmOut = ByteArrayOutputStream()
         val speechRanges = mutableListOf<LongRange>()
-        pcmOut.write(ByteArray((INTRO_SECONDS * TARGET_RATE * 2).toInt()))
-        var start = introUs
-        for (a in audios) {
-            val mono = toMonoTarget(a)
-            val monoUs = mono.size * 1_000_000L / (TARGET_RATE * 2)
-            pcmOut.write(mono)
-            if (monoUs > 0) speechRanges.add(start until (start + monoUs))
-            start += monoUs
-            pcmOut.write(silence)
-            start += silenceUs
-        }
-        pcmOut.write(ByteArray((OUTRO_SECONDS * TARGET_RATE * 2).toInt()))
-        val durationUs = start + outroUs
-        val monoPcm = pcmOut.toByteArray()
-
-        // Anzeige-Fenster der Szenen: Sprache plus Sprechpause plus halbe Überblendung
         val sceneStart = LongArray(slides.size)
         val sceneDur = LongArray(slides.size)
-        for (i in slides.indices) {
-            val r = speechRanges.getOrNull(i)
-            val speechUs = if (r != null) (r.last - r.first) else 0L
-            sceneStart[i] = if (r != null) r.first else (start - outroUs - silenceUs)
-            sceneDur[i] = speechUs + silenceUs + fadeUs / 2
+        pcmOut.write(ByteArray((INTRO_SECONDS * TARGET_RATE * 2).toInt()))
+        var cursor = introUs
+        for (i in audios.indices) {
+            val mono = toMonoTarget(audios[i])
+            val monoUs = mono.size * 1_000_000L / (TARGET_RATE * 2)
+            val estimateUs = minSceneUs(slides[i].title + " " + slides[i].text)
+            val padUs = maxOf(silenceUs, estimateUs - monoUs)
+            pcmOut.write(mono)
+            sceneStart[i] = cursor
+            sceneDur[i] = monoUs + padUs + fadeUs / 2
+            if (monoUs > 0) speechRanges.add(cursor until (cursor + monoUs))
+            cursor += monoUs + padUs
+            pcmOut.write(ByteArray((padUs * TARGET_RATE * 2L / 1_000_000L).toInt()))
         }
+        pcmOut.write(ByteArray((OUTRO_SECONDS * TARGET_RATE * 2).toInt()))
+        val durationUs = cursor + outroUs
+        val monoPcm = pcmOut.toByteArray()
 
         // Hintergrundmusik + Sprachausgabe zu einer Stereospur mischen
         val stereoPcm = mixAudio(monoPcm, durationUs, speechRanges, backgroundMusic)
@@ -196,11 +199,11 @@ object VideoExporter {
         }
         onProgress(slides.size + 2, totalSteps)
 
-        // Szenen-Grafiken vorbereiten (Ebenen für Zoom, Text-Fade, Untertitel)
+        // Szenen-Grafiken vorbereiten (Ebenen für Zoom, Text-Fade, Untertitel).
+        // Eingebrannte Untertitel laufen über das komplette Anzeige-Fenster der Szene.
         val gfx = try {
             slides.mapIndexed { i, s ->
-                val r = speechRanges.getOrNull(i)
-                renderSlideGfx(s, i, slides.size, burnedSubs, if (r != null) (r.last - r.first) else 0L)
+                renderSlideGfx(s, i, slides.size, burnedSubs, sceneDur[i] - fadeUs / 2)
             }
         } catch (e: ExportException) {
             throw e
@@ -320,14 +323,17 @@ object VideoExporter {
             val ease = a * a * (3f - 2f * a)
             val cy = HEIGHT * (if (intro) 0.34f else 0.38f)
             val grow = 0.92f + 0.08f * ease
-            c.save()
-            c.scale(grow, grow, WIDTH / 2f, cy)
-            drawBigLogo(c, WIDTH / 2f, cy, 120f * scale, (ease * 255).toInt())
-            c.restore()
-            drawWordmark(c, cy + 210f * scale, 78f * scale, (ease * 255).toInt())
+            val mark = logoMark
+            if (mark != null) {
+                c.save()
+                c.scale(grow, grow, WIDTH / 2f, cy)
+                drawLogoMark(c, mark, WIDTH / 2f, cy, 180f * scale, (ease * 255).toInt())
+                c.restore()
+            }
+            drawWordmark(c, cy + 175f * scale, 78f * scale, (ease * 255).toInt())
             if (intro) {
                 c.save()
-                c.translate((WIDTH - topicLayout.width) / 2f, cy + 300f * scale)
+                c.translate((WIDTH - topicLayout.width) / 2f, cy + 290f * scale)
                 topicLayout.draw(c)
                 c.restore()
             } else {
@@ -335,8 +341,8 @@ object VideoExporter {
                 p2.textAlign = Paint.Align.CENTER
                 p2.textSize = 36f * scale
                 p2.color = Color.argb(225, 255, 255, 255)
-                c.drawText("Einfach ein Foto machen –", WIDTH / 2f, cy + 300f * scale, p2)
-                c.drawText("die App erklärt den Rest!", WIDTH / 2f, cy + 350f * scale, p2)
+                c.drawText("Einfach ein Foto machen –", WIDTH / 2f, cy + 310f * scale, p2)
+                c.drawText("die App erklärt den Rest!", WIDTH / 2f, cy + 360f * scale, p2)
             }
             drawProgress(c, t)
         }
@@ -1114,6 +1120,16 @@ object VideoExporter {
         return SlideGfx(base, photo, photoRect, textLayer, textTop, layerH, captions)
     }
 
+    /**
+     * Mindest-Anzeigedauer einer Szene nach Textlänge (etwa 14 Zeichen pro
+     * Sekunde plus 2,5 s Anlauf): Der komplette Text bleibt solange sichtbar,
+     * selbst wenn die Sprachausgabe fehlt oder kürzer ist.
+     */
+    private fun minSceneUs(text: String): Long {
+        val len = text.length.coerceAtMost(400)
+        return (2_500_000L + len * 70_000L).coerceIn(3_000_000L, 25_000_000L)
+    }
+
     /** Teilt den Szenentext in kurze Untertitel-Häppchen mit proportionaler Zeitlast. */
     private fun buildCaptions(slide: SlideData, speechDurUs: Long): List<Caption> {
         if (speechDurUs <= 0 || slide.text.isBlank()) return emptyList()
@@ -1193,96 +1209,52 @@ object VideoExporter {
     }
 
     /**
-     * Wasserzeichen: runde Badge mit der Logo-Marke (Kamera mit blauem
-     * Gehirn-Kreis) plus Schriftzug „Wer Wie Was“ mit blauem „Wie“,
-     * in der unteren linken Ecke jeder Szene.
+     * Wasserzeichen mittig am unteren Rand jeder Szene: die echte App-Logo-Marke
+     * (gleiche Vektorgrafik wie das Launcher-Icon – Kamera mit blauem Gehirn-Kreis,
+     * Lupe mit Fragezeichen, drei farbige Sprechblasen) plus Schriftzug
+     * „Wer Wie Was“ mit blauem „Wie“.
      */
     private fun drawWatermark(canvas: Canvas) {
-        val cx = 88f * scale
-        val cy = HEIGHT - 74f * scale
-        val r = 30f * scale
-
-        val badge = Paint(Paint.ANTI_ALIAS_FLAG)
-        badge.color = Color.argb(210, 255, 255, 255)
-        val ink = Paint(Paint.ANTI_ALIAS_FLAG)
-        ink.color = Color.argb(235, 32, 33, 36)
-        val blue = Paint(Paint.ANTI_ALIAS_FLAG)
-        blue.color = Color.rgb(66, 133, 244)
-        val white = Paint(Paint.ANTI_ALIAS_FLAG)
-        white.color = Color.WHITE
-        val line = Paint(Paint.ANTI_ALIAS_FLAG)
-        line.color = Color.WHITE
-        line.style = Paint.Style.STROKE
-        line.strokeWidth = r * 0.10f
-        line.strokeCap = Paint.Cap.ROUND
-
+        val mark = logoMark ?: return
+        val markH = 40f * scale
+        val markW = markH * 1.35f
         val text = TextPaint(Paint.ANTI_ALIAS_FLAG)
-        text.textSize = 30f * scale
+        text.textSize = 28f * scale
         text.isFakeBoldText = true
         text.setShadowLayer(4f * scale, 0f, 2f * scale, Color.argb(130, 0, 0, 0))
-
-        // Runde Badge mit Kamera-Silhouette
-        canvas.drawCircle(cx, cy, r, badge)
-        canvas.drawRoundRect(
-            RectF(cx - r * 0.62f, cy - r * 0.42f, cx + r * 0.62f, cy + r * 0.42f),
-            r * 0.20f, r * 0.20f, ink
-        )
-        canvas.drawRoundRect(
-            RectF(cx - r * 0.28f, cy - r * 0.62f, cx + r * 0.28f, cy - r * 0.34f),
-            r * 0.10f, r * 0.10f, ink
-        )
-        val lens = r * 0.40f
-        canvas.drawCircle(cx, cy + r * 0.05f, lens, blue)
-        canvas.drawCircle(cx, cy + r * 0.05f, lens * 0.42f, white)
-        canvas.drawLine(cx - lens * 0.85f, cy - r * 0.26f, cx, cy + r * 0.05f, line)
-        canvas.drawLine(cx + lens * 0.85f, cy - r * 0.26f, cx, cy + r * 0.05f, line)
-        canvas.drawLine(cx, cy + r * 0.05f, cx, cy + r * 0.36f, line)
-
-        // Schriftzug „Wer Wie Was“ mit blauem „Wie“
-        val tx = cx + r + 16f * scale
-        val base = cy + text.textSize * 0.34f
-        text.color = Color.argb(225, 255, 255, 255)
-        canvas.drawText("Wer ", tx, base, text)
         val w1 = text.measureText("Wer ")
-        text.color = Color.rgb(66, 133, 244)
-        canvas.drawText("Wie", tx + w1, base, text)
         val w2 = text.measureText("Wie")
+        val w3 = text.measureText(" Was")
+        val gap = 14f * scale
+        val total = markW + gap + w1 + w2 + w3
+        val cy = HEIGHT - 70f * scale
+        val startX = (WIDTH - total) / 2f
+        drawLogoMark(canvas, mark, startX + markW / 2f, cy, markH, 225)
+        // Schriftzug mit blauem „Wie“
+        val base = cy + text.textSize * 0.34f
+        var x = startX + markW + gap
         text.color = Color.argb(225, 255, 255, 255)
-        canvas.drawText(" Was", tx + w1 + w2, base, text)
+        canvas.drawText("Wer ", x, base, text)
+        x += w1
+        text.color = Color.rgb(66, 133, 244)
+        canvas.drawText("Wie", x, base, text)
+        x += w2
+        text.color = Color.argb(225, 255, 255, 255)
+        canvas.drawText(" Was", x, base, text)
     }
 
-    /** Große Logo-Marke für Intro- und Abschluss-Karte (Kamera mit blauem Kreis). */
-    private fun drawBigLogo(c: Canvas, cx: Float, cy: Float, r: Float, alpha: Int) {
-        val a = alpha.coerceIn(0, 255)
-        val badge = Paint(Paint.ANTI_ALIAS_FLAG)
-        badge.color = Color.argb((a * 235) / 255, 255, 255, 255)
-        val ink = Paint(Paint.ANTI_ALIAS_FLAG)
-        ink.color = Color.argb((a * 245) / 255, 32, 33, 36)
-        val blue = Paint(Paint.ANTI_ALIAS_FLAG)
-        blue.color = Color.argb(a, 66, 133, 244)
-        val white = Paint(Paint.ANTI_ALIAS_FLAG)
-        white.color = Color.argb(a, 255, 255, 255)
-        val line = Paint(Paint.ANTI_ALIAS_FLAG)
-        line.color = Color.argb(a, 255, 255, 255)
-        line.style = Paint.Style.STROKE
-        line.strokeWidth = r * 0.10f
-        line.strokeCap = Paint.Cap.ROUND
-
-        c.drawCircle(cx, cy, r, badge)
-        c.drawRoundRect(
-            RectF(cx - r * 0.62f, cy - r * 0.42f, cx + r * 0.62f, cy + r * 0.42f),
-            r * 0.20f, r * 0.20f, ink
-        )
-        c.drawRoundRect(
-            RectF(cx - r * 0.28f, cy - r * 0.62f, cx + r * 0.28f, cy - r * 0.34f),
-            r * 0.10f, r * 0.10f, ink
-        )
-        val lens = r * 0.40f
-        c.drawCircle(cx, cy + r * 0.05f, lens, blue)
-        c.drawCircle(cx, cy + r * 0.05f, lens * 0.42f, white)
-        c.drawLine(cx - lens * 0.85f, cy - r * 0.26f, cx, cy + r * 0.05f, line)
-        c.drawLine(cx + lens * 0.85f, cy - r * 0.26f, cx, cy + r * 0.05f, line)
-        c.drawLine(cx, cy + r * 0.05f, cx, cy + r * 0.36f, line)
+    /**
+     * Zeichnet die App-Logo-Marke aus dem Launcher-Icon-Vektor (108er-Viewport)
+     * so, dass der Logo-Inhalt (etwa x 29–83.6, y 42.7–83.2 im Viewport) mittig
+     * um (cx, cy) mit der Inhalts-Höhe h sitzt.
+     */
+    private fun drawLogoMark(c: Canvas, mark: Drawable, cx: Float, cy: Float, h: Float, alpha: Int) {
+        val d = h * 108f / 40.5f
+        val left = cx - (56.3f / 108f) * d
+        val top = cy - (62.9f / 108f) * d
+        mark.alpha = alpha.coerceIn(0, 255)
+        mark.setBounds(left.toInt(), top.toInt(), (left + d).toInt(), (top + d).toInt())
+        mark.draw(c)
     }
 
     /** Zeichnet eine Bitmap formatfüllend und mittig beschnitten in ein Zielrechteck. */
