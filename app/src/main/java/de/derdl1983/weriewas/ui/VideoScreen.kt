@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
@@ -199,7 +200,26 @@ fun VideoScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val discovery = remember(discoveryId) { DiscoveryStore.get(context, discoveryId) }
+    // Entdeckung im Hintergrund laden – kein Datei-I/O auf dem Haupt-Thread.
+    var discoveryState by remember(discoveryId) { mutableStateOf<Discovery?>(null) }
+    var discoveryLoaded by remember(discoveryId) { mutableStateOf(false) }
+    LaunchedEffect(discoveryId) {
+        discoveryState = withContext(Dispatchers.IO) { DiscoveryStore.get(context, discoveryId) }
+        discoveryLoaded = true
+    }
+
+    if (!discoveryLoaded) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+
+    val discovery = discoveryState
 
     if (discovery == null) {
         Column(
@@ -222,7 +242,11 @@ fun VideoScreen(
         mutableStateOf(prefs.getString("video_length", "auto") ?: "auto")
     }
     val slides = remember(discovery.id, videoLength) { buildSlides(discovery, videoLength) }
-    val bitmap = remember(discovery.id) { Images.loadThumbnail(discovery.imagePath, 720) }
+    // Foto im Hintergrund dekodieren, damit der Screen sofort aufbaut
+    var bitmap by remember(discovery.id) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(discovery.id) {
+        bitmap = withContext(Dispatchers.IO) { Images.loadThumbnail(discovery.imagePath, 720) }
+    }
 
     // Passende, frei lizenzierte Online-Themenbilder je Szene (falls online verfügbar)
     val webImages = remember(discovery.id, videoLength) { mutableStateOf<List<WebImages.WebImage?>?>(null) }
@@ -235,6 +259,10 @@ fun VideoScreen(
         )
         webImages.value = WebImages.findByQueries(context, queries)
     }
+
+    // Dekodierte Themenbilder je Seite – im Hintergrund geladen, damit die
+    // Vorschau beim Umblättern nicht ruckelt (kein Dekodieren beim Zeichnen).
+    var webThumbs by remember(discovery.id, videoLength) { mutableStateOf<Map<Int, Bitmap>>(emptyMap()) }
 
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val speedLabels = remember {
@@ -255,6 +283,17 @@ fun VideoScreen(
 
     var page by remember { mutableIntStateOf(0) }
     var playing by remember { mutableStateOf(true) }
+
+    // Themenbild der aktuellen Seite im Hintergrund dekodieren (einmal je Seite)
+    LaunchedEffect(page, webImages.value) {
+        val wi = webImages.value?.getOrNull(page)
+        if (wi != null && !webThumbs.containsKey(page)) {
+            val bmp = withContext(Dispatchers.IO) { Images.loadThumbnail(wi.filePath, 900) }
+            if (bmp != null) {
+                webThumbs = webThumbs + (page to bmp)
+            }
+        }
+    }
     var ttsReady by remember { mutableStateOf(false) }
     var ttsFailed by remember { mutableStateOf(false) }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
@@ -542,8 +581,7 @@ fun VideoScreen(
             val previewBmp = if (slide.showPhoto) {
                 bitmap
             } else {
-                val wi = webImages.value?.getOrNull(page)
-                if (wi != null) Images.loadThumbnail(wi.filePath, 900) else null
+                webThumbs[page]
             }
             Box(
                 modifier = Modifier
@@ -1375,6 +1413,7 @@ private fun shareVideo(context: Context, uri: Uri, pkg: String?) {
         // Still ignorieren
     }
 }
+
 
 
 

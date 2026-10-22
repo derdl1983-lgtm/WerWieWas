@@ -1,6 +1,7 @@
 package de.derdl1983.weriewas.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -75,7 +76,11 @@ fun AnalyzeScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val bitmap = remember(imagePath) { Images.loadThumbnail(imagePath, 640) }
+    // Foto im Hintergrund dekodieren, damit der Screen sofort aufbaut
+    var bitmap by remember(imagePath) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(imagePath) {
+        bitmap = withContext(Dispatchers.IO) { Images.loadThumbnail(imagePath, 640) }
+    }
 
     var configured by remember { mutableStateOf(OnlineAnalyzer.isConfigured(context)) }
     var showConsent by remember { mutableStateOf(false) }
@@ -261,17 +266,7 @@ fun AnalyzeScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    extraPaths.forEach { path ->
-                        val thumb = remember(path) { Images.loadThumbnail(path, 128) }
-                        thumb?.let {
-                            Image(
-                                bitmap = it.asImageBitmap(),
-                                contentDescription = "Weitere Ansicht",
-                                modifier = Modifier.size(56.dp),
-                                contentScale = ContentScale.Crop
-                            )
-                        }
-                    }
+                    extraPaths.forEach { path -> ExtraThumb(path) }
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(
@@ -385,5 +380,22 @@ fun AnalyzeScreen(
                 }
             }
         }
+    }
+}
+
+/** Kleine Vorschau einer weiteren Ansicht – Dekodieren im Hintergrund. */
+@Composable
+private fun ExtraThumb(path: String) {
+    var thumb by remember(path) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(path) {
+        thumb = withContext(Dispatchers.IO) { Images.loadThumbnail(path, 128) }
+    }
+    thumb?.let {
+        Image(
+            bitmap = it.asImageBitmap(),
+            contentDescription = "Weitere Ansicht",
+            modifier = Modifier.size(56.dp),
+            contentScale = ContentScale.Crop
+        )
     }
 }

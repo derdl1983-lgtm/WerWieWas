@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
@@ -18,6 +19,7 @@ import android.speech.tts.Voice
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -73,6 +75,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -129,13 +132,32 @@ fun ResultScreen(
     val scope = rememberCoroutineScope()
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
-    var discovery by remember(discoveryId) { mutableStateOf(DiscoveryStore.get(context, discoveryId)) }
+    var discovery by remember(discoveryId) { mutableStateOf<Discovery?>(null) }
+    var discoveryLoaded by remember(discoveryId) { mutableStateOf(false) }
+    // Entdeckung im Hintergrund laden – kein Datei-I/O auf dem Haupt-Thread.
+    LaunchedEffect(discoveryId) {
+        discovery = withContext(Dispatchers.IO) { DiscoveryStore.get(context, discoveryId) }
+        discoveryLoaded = true
+    }
     var showDelete by remember { mutableStateOf(false) }
     var showShareDialog by remember { mutableStateOf(false) }
     var showChatDialog by remember { mutableStateOf(false) }
     var showOnlineDialog by remember { mutableStateOf(false) }
     var onlineRunning by remember { mutableStateOf(false) }
     var onlineError by remember { mutableStateOf<String?>(null) }
+
+    if (!discoveryLoaded) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            CircularProgressIndicator()
+            Spacer(Modifier.height(12.dp))
+            Text("Lade Entdeckung …", style = MaterialTheme.typography.bodyMedium)
+        }
+        return
+    }
 
     val d = discovery
     if (d == null) {
@@ -151,8 +173,14 @@ fun ResultScreen(
         return
     }
 
-    val bitmap = remember(d.id) { Images.loadThumbnail(d.imagePath, 720) }
-    val sections = remember(d.id) { buildReadSections(d) }
+    // Foto im Hintergrund dekodieren, damit der Screen sofort aufbaut
+    var bitmap by remember(d.id) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(d.id) {
+        bitmap = withContext(Dispatchers.IO) { Images.loadThumbnail(d.imagePath, 720) }
+    }
+    // Erklärung als Schlüssel: Nach einer Tiefenanalyse bauen sich die
+    // Abschnitte sofort mit dem neuen Text auf (nicht erst beim Neustart).
+    val sections = remember(d.id, d.explanation) { buildReadSections(d) }
 
     // ---------- Vorlesen ----------
     // Edge-TTS-Online-Stimme hat Vorrang (Erklärbär-Stimme, sonst Moderator),
@@ -336,10 +364,16 @@ fun ResultScreen(
         readLoading = true
         readError = null
         try {
+            val spoken = section.title + ". " + section.text
+            // Cache-Name enthält Stimme und Text-Prüfsumme: Nach einer
+            // Tiefenanalyse oder einem Stimmwechsel läuft nie altes Audio.
+            val cacheName = "www_read_" + d.id + "_" + readIndex +
+                "_v" + (edgeVoice.hashCode() and 0x7fffffff) +
+                "_t" + (spoken.hashCode() and 0x7fffffff) + ".mp3"
             val mp3 = withContext(Dispatchers.IO) {
-                val f = File(context.cacheDir, "www_read_" + d.id + "_" + readIndex + ".mp3")
+                val f = File(context.cacheDir, cacheName)
                 if (!f.exists() || f.length() < 200L) {
-                    EdgeTTS.synthesizeToMp3(section.title + ". " + section.text, edgeVoice, 0, f)
+                    EdgeTTS.synthesizeToMp3(spoken, edgeVoice, 0, f)
                 }
                 f
             }
@@ -386,8 +420,11 @@ fun ResultScreen(
                     IconButton(
                         onClick = {
                             stopReading()
-                            DiscoveryStore.toggleFavorite(context, d.id)
-                            discovery = DiscoveryStore.get(context, d.id)
+                            val id = d.id
+                            scope.launch {
+                                withContext(Dispatchers.IO) { DiscoveryStore.toggleFavorite(context, id) }
+                                discovery = withContext(Dispatchers.IO) { DiscoveryStore.get(context, id) }
+                            }
                         }
                     ) {
                         Icon(
@@ -420,6 +457,25 @@ fun ResultScreen(
                             .fillMaxWidth()
                             .height(240.dp),
                         contentScale = ContentScale.Crop
+                    )
+                }
+            }
+
+            // Weitere aufgenommene Ansichten der Entdeckung (z. B. Rückseite, Detail)
+            if (d.extraPaths.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        d.extraPaths.forEach { path -> ExtraThumb(path) }
+                    }
+                    Text(
+                        "${1 + d.extraPaths.size} Fotos dieser Entdeckung",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                     )
                 }
             }
@@ -635,7 +691,18 @@ fun ResultScreen(
     }
 
     if (showChatDialog) {
-        ChatDialog(context = context, d = d, scope = scope, onDismiss = { showChatDialog = false })
+        ChatDialog(
+            context = context,
+            d = d,
+            scope = scope,
+            onHistoryChanged = {
+                val id = d.id
+                scope.launch {
+                    discovery = withContext(Dispatchers.IO) { DiscoveryStore.get(context, id) }
+                }
+            },
+            onDismiss = { showChatDialog = false }
+        )
     }
 
     if (showShareDialog) {
@@ -694,8 +761,11 @@ fun ResultScreen(
                 TextButton(
                     onClick = {
                         showDelete = false
-                        DiscoveryStore.remove(context, d.id)
-                        onClose()
+                        val id = d.id
+                        scope.launch {
+                            withContext(Dispatchers.IO) { DiscoveryStore.remove(context, id) }
+                            onClose()
+                        }
                     }
                 ) { Text("Löschen") }
             },
@@ -737,7 +807,7 @@ fun ResultScreen(
                                     withContext(Dispatchers.IO) {
                                         DiscoveryStore.update(context, updated)
                                     }
-                                    discovery = DiscoveryStore.get(context, d.id)
+                                    discovery = withContext(Dispatchers.IO) { DiscoveryStore.get(context, d.id) }
                                 }
                             } catch (e: Exception) {
                                 onlineError = "Online-Analyse fehlgeschlagen: " +
@@ -919,9 +989,14 @@ private fun ChatDialog(
     context: Context,
     d: Discovery,
     scope: CoroutineScope,
+    onHistoryChanged: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val chatHistory = remember { mutableStateListOf<Pair<String, String>>() }
+    // Chat-Verlauf bleibt dauerhaft an der Entdeckung gespeichert –
+    // beim Wiederöffnen ist die Unterhaltung wieder da (max. 40 Einträge).
+    val chatHistory = remember {
+        mutableStateListOf<Pair<String, String>>().apply { addAll(d.chat.takeLast(40)) }
+    }
     var question by remember { mutableStateOf("") }
     var running by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -937,9 +1012,21 @@ private fun ChatDialog(
 
     fun startListening() {
         val rec = recognizer ?: return
+        // Spracheingabe folgt der Antwort-Sprache des KI-Profils (statt fest Deutsch),
+        // damit Fragen auch im Urlaub oder beim Sprachenlernen verstanden werden.
+        val profileLang = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getString("ai_language", "de") ?: "de"
+        val spokenLang = when (profileLang) {
+            "en" -> "en-US"
+            "fr" -> "fr-FR"
+            "es" -> "es-ES"
+            "tr" -> "tr-TR"
+            "it" -> "it-IT"
+            else -> "de-DE"
+        }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, spokenLang)
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Stelle deine Frage zur Entdeckung")
         }
         rec.setRecognitionListener(object : RecognitionListener {
@@ -981,6 +1068,12 @@ private fun ChatDialog(
                 val answer = OnlineAnalyzer.followUp(context, d, q, history)
                 chatHistory.add(q to answer)
                 question = ""
+                // Chat-Verlauf an der Entdeckung sichern (max. 40 Einträge)
+                val updated = d.copy(chat = chatHistory.toList().takeLast(40))
+                withContext(Dispatchers.IO) {
+                    DiscoveryStore.update(context, updated)
+                }
+                onHistoryChanged()
             } catch (e: Exception) {
                 error = e.message ?: "Die Anfrage ist fehlgeschlagen."
             } finally {
@@ -1088,3 +1181,23 @@ private fun ChatDialog(
 
 
 
+
+
+/** Kleine Vorschau einer weiteren Foto-Ansicht – Dekodieren im Hintergrund. */
+@Composable
+private fun ExtraThumb(path: String) {
+    var thumb by remember(path) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(path) {
+        thumb = withContext(Dispatchers.IO) { Images.loadThumbnail(path, 128) }
+    }
+    thumb?.let {
+        Image(
+            bitmap = it.asImageBitmap(),
+            contentDescription = "Weitere Ansicht",
+            modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(8.dp)),
+            contentScale = ContentScale.Crop
+        )
+    }
+}

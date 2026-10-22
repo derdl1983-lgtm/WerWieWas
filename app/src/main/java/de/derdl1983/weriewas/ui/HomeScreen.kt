@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import de.derdl1983.weriewas.data.Discovery
 import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.data.LabelConfidence
+import de.derdl1983.weriewas.data.PendingItem
 import de.derdl1983.weriewas.data.PendingStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import kotlinx.coroutines.CancellationException
@@ -98,11 +99,12 @@ fun HomeScreen(
         }
     }
 
-    // Mini-Statistik der bisherigen Entdeckungen
+    // Mini-Statistik der bisherigen Entdeckungen – Datei-I/O im Hintergrund laden,
+    // damit die Startseite auch bei vielen Einträgen sofort bedienbar bleibt.
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var stats by remember { mutableStateOf(DiscoveryStore.loadAll(context)) }
-    var pending by remember { mutableStateOf(PendingStore.loadAll(context)) }
+    var stats by remember { mutableStateOf(listOf<Discovery>()) }
+    var pending by remember { mutableStateOf(listOf<PendingItem>()) }
     var queueRunning by remember { mutableStateOf(false) }
     var queueMessage by remember { mutableStateOf<String?>(null) }
 
@@ -166,9 +168,13 @@ fun HomeScreen(
         }
     }
 
-    // Automatischer Versuch, sobald die Startseite offen ist und Netz da ist
+    // Laden + automatischer Nachsende-Versuch, sobald die Startseite offen
+    // ist und Netz da ist (Datei-I/O bewusst nicht auf dem Haupt-Thread).
     LaunchedEffect(Unit) {
-        if (pending.isNotEmpty() && isOnline()) {
+        val loadedPending = withContext(Dispatchers.IO) { PendingStore.loadAll(context) }
+        pending = loadedPending
+        stats = withContext(Dispatchers.IO) { DiscoveryStore.loadAll(context) }
+        if (loadedPending.isNotEmpty() && isOnline()) {
             processQueue()
         }
     }
@@ -387,6 +393,26 @@ fun HomeScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
+                        val weekAgo = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
+                        val weekCount = stats.count { it.timestamp > weekAgo }
+                        val categoryCount = stats.map { it.explanation.category }
+                            .filter { it.isNotBlank() }
+                            .distinct()
+                            .size
+                        if (weekCount > 0) {
+                            Text(
+                                "Diese Woche entdeckt: $weekCount",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+                        if (categoryCount > 1) {
+                            Text(
+                                "Bereits $categoryCount verschiedene Kategorien entdeckt",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
                         if (topCategories.isNotBlank()) {
                             Text(
                                 "Top-Kategorien: $topCategories",
@@ -449,4 +475,5 @@ private fun ActionCard(
         }
     }
 }
+
 

@@ -1,6 +1,7 @@
 package de.derdl1983.weriewas.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,9 +41,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +58,9 @@ import androidx.compose.ui.unit.dp
 import de.derdl1983.weriewas.data.Discovery
 import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.util.Images
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -66,22 +73,39 @@ fun HistoryScreen(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
-    var list by remember { mutableStateOf(DiscoveryStore.loadAll(context)) }
+    val scope = rememberCoroutineScope()
+    // Entdeckungen im Hintergrund laden – kein Datei-I/O auf dem Haupt-Thread.
+    // null = noch am Laden, leere Liste = keine Entdeckungen.
+    var list by remember { mutableStateOf<List<Discovery>?>(null) }
+    LaunchedEffect(Unit) {
+        list = withContext(Dispatchers.IO) { DiscoveryStore.loadAll(context) }
+    }
     var pendingDelete by remember { mutableStateOf<Discovery?>(null) }
     var search by remember { mutableStateOf("") }
     var categoryFilter by remember { mutableStateOf<String?>(null) }
+    var favOnly by remember { mutableStateOf(false) }
 
-    val categories = list.map { it.explanation.category }
+    val entries = list.orEmpty()
+    val categories = entries.map { it.explanation.category }
         .filter { it.isNotBlank() }
         .distinct()
         .sorted()
-    val filtered = list.filter { entry ->
+    val filtered = entries.filter { entry ->
         val matchesCategory = categoryFilter == null || entry.explanation.category == categoryFilter
+        val matchesFav = !favOnly || entry.isFavorite
         val q = search.trim()
+        // Suche über alle Erklärtexte, die Kategorie und die Fakten –
+        // so findet man Entdeckungen auch über Einzelheiten wieder.
         val matchesSearch = q.isEmpty() ||
             entry.explanation.title.contains(q, ignoreCase = true) ||
-            entry.explanation.summary.contains(q, ignoreCase = true)
-        matchesCategory && matchesSearch
+            entry.explanation.category.contains(q, ignoreCase = true) ||
+            entry.explanation.summary.contains(q, ignoreCase = true) ||
+            entry.explanation.howItWorks.contains(q, ignoreCase = true) ||
+            entry.explanation.usage.contains(q, ignoreCase = true) ||
+            entry.explanation.practical.contains(q, ignoreCase = true) ||
+            entry.explanation.safety.contains(q, ignoreCase = true) ||
+            entry.explanation.facts.any { it.contains(q, ignoreCase = true) }
+        matchesCategory && matchesSearch && matchesFav
     }
 
     Scaffold(
@@ -96,7 +120,20 @@ fun HistoryScreen(
             )
         }
     ) { padding ->
-        if (list.isEmpty()) {
+        val loaded = list
+        if (loaded == null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator()
+                Spacer(Modifier.height(12.dp))
+                Text("Lade Entdeckungen …", style = MaterialTheme.typography.bodyMedium)
+            }
+        } else if (loaded.isEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -129,7 +166,7 @@ fun HistoryScreen(
                     leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                     singleLine = true
                 )
-                if (categories.isNotEmpty()) {
+                if (categories.isNotEmpty() || entries.any { it.isFavorite }) {
                     Spacer(Modifier.height(8.dp))
                     Row(
                         modifier = Modifier
@@ -138,16 +175,28 @@ fun HistoryScreen(
                             .padding(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        if (categories.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = { categoryFilter = null },
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (categoryFilter == null) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        androidx.compose.ui.graphics.Color.Transparent
+                                    }
+                                )
+                            ) { Text("Alle") }
+                        }
                         OutlinedButton(
-                            onClick = { categoryFilter = null },
+                            onClick = { favOnly = !favOnly },
                             colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (categoryFilter == null) {
+                                containerColor = if (favOnly) {
                                     MaterialTheme.colorScheme.primaryContainer
                                 } else {
                                     androidx.compose.ui.graphics.Color.Transparent
                                 }
                             )
-                        ) { Text("Alle") }
+                        ) { Text("★ Favoriten") }
                         categories.forEach { category ->
                             OutlinedButton(
                                 onClick = {
@@ -204,9 +253,12 @@ fun HistoryScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        DiscoveryStore.remove(context, entry.id)
-                        list = DiscoveryStore.loadAll(context)
+                        val id = entry.id
                         pendingDelete = null
+                        scope.launch {
+                            withContext(Dispatchers.IO) { DiscoveryStore.remove(context, id) }
+                            list = withContext(Dispatchers.IO) { DiscoveryStore.loadAll(context) }
+                        }
                     }
                 ) { Text("Löschen") }
             },
@@ -224,7 +276,11 @@ private fun HistoryItem(
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val thumb = remember(entry.id) { Images.loadThumbnail(entry.imagePath, 128) }
+    // Thumbnail im Hintergrund dekodieren – flüssiges Scrollen auch bei vielen Einträgen
+    var thumb by remember(entry.id) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(entry.id) {
+        thumb = withContext(Dispatchers.IO) { Images.loadThumbnail(entry.imagePath, 128) }
+    }
     val dateFormat = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.GERMANY) }
 
     Card(
@@ -296,3 +352,4 @@ private fun HistoryItem(
         }
     }
 }
+

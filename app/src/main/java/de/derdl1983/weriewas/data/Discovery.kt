@@ -34,7 +34,10 @@ data class Discovery(
     val labels: List<LabelConfidence>,
     val explanation: Explanation,
     var isFavorite: Boolean = false,
-    val extraPaths: List<String> = emptyList()
+    val extraPaths: List<String> = emptyList(),
+    // Nachgefragte Fragen mit Antworten der KI – bleiben an der Entdeckung erhalten
+    // (Paar: Frage → Antwort), damit der Chat-Verlauf beim Wiederöffnen da ist.
+    val chat: List<Pair<String, String>> = emptyList()
 )
 
 /** Einfache JSON-basierte Speicherung der Entdeckungen im App-internen Speicher. */
@@ -139,6 +142,10 @@ object DiscoveryStore {
             .put("source", d.explanation.source)
         val extra = JSONArray()
         d.extraPaths.forEach { extra.put(it) }
+        val chat = JSONArray()
+        d.chat.forEach {
+            chat.put(JSONObject().put("q", it.first).put("a", it.second))
+        }
         return JSONObject()
             .put("id", d.id)
             .put("imagePath", d.imagePath)
@@ -147,6 +154,7 @@ object DiscoveryStore {
             .put("labels", labels)
             .put("explanation", expl)
             .put("favorite", d.isFavorite)
+            .put("chat", chat)
     }
 
     private fun discoveryFromJson(o: JSONObject): Discovery {
@@ -169,6 +177,13 @@ object DiscoveryStore {
         val extraPaths = mutableListOf<String>()
         val extraArray = o.optJSONArray("extraPaths") ?: JSONArray()
         for (i in 0 until extraArray.length()) extraPaths.add(extraArray.optString(i))
+        // Gespeicherter Chat-Verlauf (Frage → Antwort); fehlt bei alten Einträgen harmlos.
+        val chat = mutableListOf<Pair<String, String>>()
+        val chatArray = o.optJSONArray("chat") ?: JSONArray()
+        for (i in 0 until chatArray.length()) {
+            val jo = chatArray.getJSONObject(i)
+            chat.add(Pair(jo.optString("q"), jo.optString("a")))
+        }
         return Discovery(
             id = o.optString("id"),
             imagePath = o.optString("imagePath"),
@@ -188,7 +203,8 @@ object DiscoveryStore {
                 source = e.optString("source", "lokal")
             ),
             isFavorite = o.optBoolean("favorite", false),
-            extraPaths = extraPaths
+            extraPaths = extraPaths,
+            chat = chat
         )
     }
 }
