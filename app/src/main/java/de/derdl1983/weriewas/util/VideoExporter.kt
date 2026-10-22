@@ -95,7 +95,7 @@ object VideoExporter {
     private const val FADE_SECONDS = 0.6        // Dauer der Szenen-Überblendung
     private const val INTRO_SECONDS = 2.8
     private const val OUTRO_SECONDS = 2.2
-    private const val TEXT_FADE_SECONDS = 0.5   // Titel/Text blenden pro Szene ein
+    private const val TEXT_FADE_SECONDS = 0.5f  // Titel/Text blenden pro Szene ein
     private const val ZOOM_AMOUNT = 0.08f      // Ken-Burns-Zoomstärke auf Fotos
 
     /** Durchgehende Marken-Palette: Navy-Blau-Verläufe, dezent variiert pro Szene. */
@@ -1084,15 +1084,17 @@ object VideoExporter {
         var bodyLayout: StaticLayout? = null
         if (!burnedSubs && slide.text.isNotBlank()) {
             var bodySize = 42f * scale
-            bodyLayout = makeBody(bodySize)
-            while (top + titleLayout.height + 60f * scale + bodyLayout.height > HEIGHT - 160f * scale && bodySize > 26f * scale) {
+            var bl = makeBody(bodySize)
+            while (top + titleLayout.height + 60f * scale + bl.height > HEIGHT - 160f * scale && bodySize > 26f * scale) {
                 bodySize -= 4f * scale
-                bodyLayout = makeBody(bodySize)
+                bl = makeBody(bodySize)
             }
+            bodyLayout = bl
         }
         val textTop = top
+        val body = bodyLayout
         val layerH = (titleLayout.height +
-            (if (bodyLayout != null) 60f * scale + bodyLayout.height else 0f) + 8f)
+            (if (body != null) 60f * scale + body.height else 0f) + 8f)
             .toInt().coerceAtLeast(1)
             .coerceAtMost((HEIGHT - textTop).toInt().coerceAtLeast(1))
         val textLayer = Bitmap.createBitmap(WIDTH, layerH, Bitmap.Config.ARGB_8888)
@@ -1101,10 +1103,10 @@ object VideoExporter {
         tc.translate((WIDTH - titleLayout.width) / 2f, 0f)
         titleLayout.draw(tc)
         tc.restore()
-        if (bodyLayout != null) {
+        if (body != null) {
             tc.save()
-            tc.translate((WIDTH - bodyLayout.width) / 2f, titleLayout.height + 60f * scale)
-            bodyLayout.draw(tc)
+            tc.translate((WIDTH - body.width) / 2f, titleLayout.height + 60f * scale)
+            body.draw(tc)
             tc.restore()
         }
 
