@@ -87,7 +87,8 @@ class ExportService : Service() {
             edgeVoiceA: String,
             edgeVoiceB: String,
             sysVoiceNameA: String,
-            sysVoiceNameB: String
+            sysVoiceNameB: String,
+            speechLang: String
         ) {
             val intent = Intent(context, ExportService::class.java).apply {
                 putExtra("discovery_id", discoveryId)
@@ -103,6 +104,7 @@ class ExportService : Service() {
                 putExtra("edge_b", edgeVoiceB)
                 putExtra("sys_a", sysVoiceNameA)
                 putExtra("sys_b", sysVoiceNameB)
+                putExtra("sys_lang", speechLang)
             }
             context.startForegroundService(intent)
         }
@@ -231,18 +233,22 @@ class ExportService : Service() {
             }
             // Gratis Edge-TTS-Stimmen vorbereiten (mit SSML-Pausen für
             // natürlichere Sprechpausen) – wie zuvor im Video-Screen.
+            // Der Cache-Dateiname enthält die Stimme, damit nach einem
+            // Sprachwechsel im KI-Profil keine alte Sprachversion läuft.
             val preAudio: List<File?>? = if (useEdge) {
                 val vA = if (edgeA.isNotBlank()) edgeA else edgeB
                 val vB = if (edgeB.isNotBlank()) edgeB else edgeA
                 val rp = ((speed - 1f) * 100f).toInt().coerceIn(-50, 100)
                 slides.mapIndexed { i, s ->
                     try {
-                        val mp3 = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + ".mp3")
-                        val wav = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + ".wav")
+                        val voice = if (i % 2 == 1) vB else vA
+                        val tag = voice.hashCode()
+                        val mp3 = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_" + tag + ".mp3")
+                        val wav = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_" + tag + ".wav")
                         if (!mp3.exists() || mp3.length() < 200L) {
                             EdgeTTS.synthesizeToMp3(
                                 s.title + ". " + s.text,
-                                if (i % 2 == 1) vB else vA,
+                                voice,
                                 rp,
                                 mp3,
                                 ssml = true
@@ -259,6 +265,10 @@ class ExportService : Service() {
             } else {
                 null
             }
+            // Antwort-Sprache des KI-Profils: Die System-Stimmen folgen ihr
+            // automatisch; sind dafür keine Stimmen installiert, greifen die
+            // deutschen Stimmen als Fallback.
+            val speechLang = (intent.getStringExtra("sys_lang") ?: "de").ifBlank { "de" }
             // System-Sprachausgabe: Stimmen aus den Einstellungen wiederfinden
             var voiceA: Voice? = null
             var voiceB: Voice? = null
@@ -268,11 +278,14 @@ class ExportService : Service() {
                 try {
                     tts = TextToSpeech(appContext) { _ -> latch.countDown() }
                     if (latch.await(15, TimeUnit.SECONDS)) {
-                        val sorted = try {
-                            tts.voices?.filter { it.locale.language == "de" }?.sortedBy { it.name }
+                        val allVoices = try {
+                            tts.voices ?: emptyList<Voice>()
                         } catch (e: Exception) {
-                            null
-                        } ?: emptyList()
+                            emptyList<Voice>()
+                        }
+                        val langVoices = allVoices.filter { it.locale.language == speechLang }
+                        val sorted = (if (langVoices.isNotEmpty()) langVoices else allVoices.filter { it.locale.language == "de" })
+                            .sortedBy { it.name }
                         if (sorted.isNotEmpty()) {
                             val nameA = intent.getStringExtra("sys_a") ?: ""
                             val nameB = intent.getStringExtra("sys_b") ?: ""
@@ -300,7 +313,8 @@ class ExportService : Service() {
                 intent.getBooleanExtra("burn_subs", false),
                 wantMusic,
                 mood,
-                discoveryId
+                discoveryId,
+                speechLang
             ) { p -> report(p) }
             ExportBus.finishRun(discoveryId, result)
             done = buildDoneNotification(result)

@@ -159,7 +159,19 @@ object OnlineAnalyzer {
         when (profile.audience) {
             "kind" -> sb.append("Zielgruppe: Kinder von 8 bis 12 Jahren. Nutze kurze, einfache Sätze und viele Alltagsbeispiele.\n")
             "jugend" -> sb.append("Zielgruppe: Jugendliche. Sprich locker und informativ.\n")
-            "senior" -> sb.append("Zielgruppe: ältere Menschen. Sprich respektvoll mit „Sie“, ruhig und deutlich.\n")
+            "senior" -> sb.append(
+                "Zielgruppe: Senioren. Erkläre, wie man es einem alten, etwas " +
+                    "vergesslichen Herrn erklärt, dem man Zeit und Geduld schenkt: " +
+                    "respektvoll mit „Sie“, ruhig, freundlich und ganz ohne Hetze. " +
+                    "Schreibe ausführlicher als sonst: kurze, klare Sätze mit einem " +
+                    "Gedanken pro Satz, erkläre jeden Schritt einzeln und nenne " +
+                    "vertraute Dinge aus dem Alltag als Beispiele. Kündige jeden " +
+                    "Abschnitt sanft an („Jetzt kommt der wichtige Teil …“) und fasse " +
+                    "am Ende jedes Abschnitts das Wichtigste in einem Merksatz " +
+                    "zusammen („Merken Sie sich: …“), damit auch nach einer kleinen " +
+                    "Pause nichts verloren geht. Wirke warm und ermutigend – " +
+                    "niemals bevormundend oder kindisch.\n"
+            )
             else -> sb.append("Zielgruppe: Erwachsene.\n")
         }
         when (profile.level) {
@@ -179,15 +191,19 @@ object OnlineAnalyzer {
             "kurz" -> sb.append("Ton: knackig wie eine Schlagzeile – kurze Sätze, null Füllwörter, jedes Wort muss sich seinen Platz verdienen.\n")
             "ausfuehrlich" -> sb.append("Ton: ausführlich und gründlich – greifbare Beispiele, echte Zusammenhänge, auch Details, die sonst unter den Tisch fallen.\n")
             "verruckt" -> sb.append(
-                "Ton: RICHTIG verrückt – erfinde eine völlig absurde, haarsträubende Geschichte um das Objekt! " +
-                    "Behandle das Objekt als Hauptfigur einer frei erfundenen, überdrehten Spaß-Story: " +
-                    "mit skurrilen Nebenfiguren, unerwarteten Wendungen, absurden Schauplätzen und einem " +
-                    "grotesken Showdown. Für die Story darfst du die Realität bewusst verbiegen und " +
-                    "Übertreibungen, Fantasienamen und Blödsinn einbauen – die Erklärung ist ausdrücklich " +
-                    "als ERFOUNDENE Geschichte gemeint. Wichtig: Das Objekt heißt bei seinem echten Namen " +
-                    "(Feld title) und das Feld category bleibt korrekt, und die Sicherheitshinweise " +
-                    "bleiben vollständig ernst und sachlich korrekt – dort wird NIEMALS etwas erfunden. " +
-                    "Streue zwischendurch ein, zwei echte Fakten über das Objekt ein.\n"
+                "Ton: Frei erfundene, witzige Geschichte – mit rotem Faden statt " +
+                    "wirrem Blödsinn! Erfinde eine humorvolle Geschichte um das " +
+                    "Objekt als Hauptfigur, die einem klaren roten Faden folgt: ein " +
+                    "einziges erkennbares Thema von Anfang bis Ende, zwei, drei " +
+                    "skurrile, aber nachvollziehbare Wendungen, ein wiederkehrendes " +
+                    "witziges Motiv und ein Finale mit Augenzwinkern, in dem sich " +
+                    "alles auflöst. Übertreibungen sind erlaubt, aber bleibe bei " +
+                    "der Geschichte – kein Absurditäten-Regen ohne Zusammenhang. " +
+                    "Streue zwischendurch ein, zwei echte Fakten über das Objekt ein. " +
+                    "Wichtig: Das Objekt heißt bei seinem echten Namen (Feld title) " +
+                    "und das Feld category bleibt korrekt, und die Sicherheitshinweise " +
+                    "bleiben vollständig ernst und sachlich korrekt – dort wird " +
+                    "NIEMALS etwas erfunden.\n"
             )
             else -> sb.append("Ton: sachlich und freundlich.\n")
         }
@@ -213,12 +229,19 @@ object OnlineAnalyzer {
             "xai" -> "https://api.x.ai/v1"
             else -> "https://api.mistral.ai/v1"
         }
+        // Ziellänge des Erklärvideos aus dem Video-Screen: Die KI schreibt neue
+        // Analysen von sich aus passend lang (ca. 2,5 Wörter pro Sekunde Sprechzeit).
+        val lengthHint = when (prefs(context).getString("video_length", "auto") ?: "auto") {
+            "30" -> "Längen-Ziel: kompakt. Schreibe insgesamt höchstens etwa 70 Wörter über alle Textfelder; halte jedes Textfeld bei maximal 1-2 kurzen Sätzen und nenne höchstens zwei Fakten.\n"
+            "90" -> "Längen-Ziel: ausführlich. Schreibe insgesamt etwa 200-230 Wörter über alle Textfelder; gib in summary, howItWorks, usage und practical echte Details und greifbare Beispiele und nenne drei Fakten.\n"
+            else -> ""
+        }
         return ProviderConfig(
             provider,
             model,
             baseUrl.trimEnd('/'),
             key,
-            profilePrompt(loadProfile(context)),
+            profilePrompt(loadProfile(context)) + lengthHint,
             prefs(context).getString("ai_language", "de") ?: "de"
         )
     }

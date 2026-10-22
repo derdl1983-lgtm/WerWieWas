@@ -65,8 +65,72 @@ object EdgeTTS {
         EdgeVoice("de-DE-TanjaNeural", "Tanja (weiblich)")
     )
 
+    /**
+     * Stimmen je Antwort-Sprache des KI-Profils: Die Online-Stimmen folgen
+     * automatisch der im KI-Profil gewählten Antwort-Sprache (z. B. für den
+     * Urlaub oder zum Sprachenlernen), ohne dass neue Stimmen gewählt werden
+     * müssen. Alle Stimmen sind gratis.
+     */
+    val VOICES_BY_LANG: Map<String, List<EdgeVoice>> = mapOf(
+        "de" to GERMAN_VOICES,
+        "en" to listOf(
+            EdgeVoice("en-US-AriaNeural", "Aria (weiblich, sehr natürlich)"),
+            EdgeVoice("en-US-GuyNeural", "Guy (männlich, sehr natürlich)"),
+            EdgeVoice("en-US-JennyNeural", "Jenny (weiblich)"),
+            EdgeVoice("en-US-AndrewNeural", "Andrew (männlich)")
+        ),
+        "fr" to listOf(
+            EdgeVoice("fr-FR-DeniseNeural", "Denise (weiblich, sehr natürlich)"),
+            EdgeVoice("fr-FR-HenriNeural", "Henri (männlich, sehr natürlich)"),
+            EdgeVoice("fr-FR-EloiseNeural", "Éloise (weiblich)")
+        ),
+        "es" to listOf(
+            EdgeVoice("es-ES-ElviraNeural", "Elvira (weiblich, sehr natürlich)"),
+            EdgeVoice("es-ES-AlvaroNeural", "Álvaro (männlich, sehr natürlich)")
+        ),
+        "tr" to listOf(
+            EdgeVoice("tr-TR-EmelNeural", "Emel (weiblich, sehr natürlich)"),
+            EdgeVoice("tr-TR-AhmetNeural", "Ahmet (männlich, sehr natürlich)")
+        ),
+        "it" to listOf(
+            EdgeVoice("it-IT-ElsaNeural", "Elsa (weiblich, sehr natürlich)"),
+            EdgeVoice("it-IT-DiegoNeural", "Diego (männlich, sehr natürlich)"),
+            EdgeVoice("it-IT-IsabellaNeural", "Isabella (weiblich)")
+        )
+    )
+
+    /** Alle Stimmen aller Sprachen (flach) – für die Anzeige des Stimmennamens. */
+    val ALL_VOICES: List<EdgeVoice> by lazy { VOICES_BY_LANG.values.flatten() }
+
+    /** Stimmenliste für eine Sprach-Kurzform ("de", "en", …); Fallback Deutsch. */
+    fun voicesFor(lang: String): List<EdgeVoice> =
+        VOICES_BY_LANG[lang.take(2)] ?: GERMAN_VOICES
+
+    /**
+     * Unterschiedliche Standard-Stimmen je Sprache:
+     * slot 0 = Moderator, slot 1 = Erklärbär.
+     */
+    fun defaultVoiceFor(lang: String, slot: Int): String {
+        val list = voicesFor(lang)
+        return (list.getOrNull(slot.coerceIn(0, list.size - 1)) ?: list.first()).id
+    }
+
+    /**
+     * Löst die gespeicherte Stimme für die Antwort-Sprache des KI-Profils auf:
+     * Passt die gespeicherte Stimme zur gewählten Sprache, bleibt sie erhalten;
+     * gehört sie zu einer anderen Sprache, greift automatisch eine passende
+     * Standard-Stimme der neuen Sprache. Bleibt die gespeicherte Stimme leer,
+     * bleibt Edge-TTS ausgen (wie vom Nutzer in den Einstellungen gewählt).
+     */
+    fun resolveVoice(stored: String, lang: String, slot: Int): String {
+        if (stored.isBlank()) return ""
+        val l = lang.take(2)
+        return if (stored.startsWith(l + "-") || !VOICES_BY_LANG.containsKey(l)) stored
+        else defaultVoiceFor(l, slot)
+    }
+
     fun labelFor(id: String): String =
-        GERMAN_VOICES.firstOrNull { it.id == id }?.label ?: id
+        ALL_VOICES.firstOrNull { it.id == id }?.label ?: id
 
     /**
      * Löscht abgelegte Sprachdateien aus dem App-Cache, die älter als
@@ -498,7 +562,10 @@ object EdgeTTS {
                             .replace(Regex("([,;:])(?=\\s|$)"), "$1<break time='150ms'/>")
                     }
                     val rate = (if (ratePercent >= 0) "+" + ratePercent else ratePercent.toString()) + "%"
-                    val ssml = ("<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='de-DE'>"
+                    // Sprach-Tag der Stimme folgen (z. B. "en-US-AriaNeural" → "en-US"),
+                    // damit die Pausen-Verarbeitung zur Stimmsprache passt.
+                    val voiceLang = voice.split("-").take(2).joinToString("-").ifBlank { "de-DE" }
+                    val ssml = ("<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='" + voiceLang + "'>"
                         + "<voice name='" + voice + "'>"
                         + "<prosody rate='" + rate + "'>" + escaped + "</prosody>"
                         + "</voice></speak>")

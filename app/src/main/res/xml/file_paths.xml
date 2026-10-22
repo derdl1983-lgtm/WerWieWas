@@ -7,4 +7,7 @@
     <!-- Exportierte Videos auf älteren Android-Versionen (unter Android 10) -->
     <external-files-path name="videos" path="Movies/videos/" />
     <files-path name="videos_intern" path="videos/" />
+    <!-- Exportierte Audiodateien (Erklärung ohne Video) auf älteren Android-Versionen -->
+    <external-files-path name="audio" path="Music/audio/" />
+    <files-path name="audio_intern" path="audio/" />
 </paths>

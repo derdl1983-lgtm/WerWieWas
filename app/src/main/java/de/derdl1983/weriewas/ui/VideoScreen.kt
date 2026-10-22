@@ -24,12 +24,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -40,7 +43,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -65,6 +67,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -75,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import de.derdl1983.weriewas.data.Discovery
 import de.derdl1983.weriewas.data.DiscoveryStore
+import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import de.derdl1983.weriewas.util.EdgeTTS
 import de.derdl1983.weriewas.util.ExportBus
 import de.derdl1983.weriewas.util.ExportService
@@ -87,6 +91,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Locale
 
@@ -95,43 +100,79 @@ private data class Slide(val title: String, val text: String, val emoji: String,
 
 private data class SlidePalette(val top: Color, val bottom: Color)
 
+/** Marken-Palette: dieselben Navy-Töne wie im exportierten Video (pro Szene dezent variiert). */
 private val slidePalettes = listOf(
-    SlidePalette(Color(0xFF1A237E), Color(0xFF3949AB)),
-    SlidePalette(Color(0xFF00695C), Color(0xFF00897B)),
-    SlidePalette(Color(0xFF4A148C), Color(0xFF6A1B9A)),
-    SlidePalette(Color(0xFF0277BD), Color(0xFF0288D1)),
-    SlidePalette(Color(0xFF283593), Color(0xFF3F51B5)),
-    SlidePalette(Color(0xFF33691E), Color(0xFF558B2F)),
-    SlidePalette(Color(0xFFBF360C), Color(0xFFD84315)),
-    SlidePalette(Color(0xFF37474F), Color(0xFF455A64))
+    SlidePalette(Color(0xFF0A1F4E), Color(0xFF1A50A8)),
+    SlidePalette(Color(0xFF0B2A5B), Color(0xFF1565C0)),
+    SlidePalette(Color(0xFF091E45), Color(0xFF283593)),
+    SlidePalette(Color(0xFF0D2B52), Color(0xFF0F6BA8)),
+    SlidePalette(Color(0xFF101F4C), Color(0xFF2547A8)),
+    SlidePalette(Color(0xFF0A2450), Color(0xFF1E6FA8)),
+    SlidePalette(Color(0xFF0C1E4E), Color(0xFF2C5FB4)),
+    SlidePalette(Color(0xFF0E2A54), Color(0xFF1A5FA8))
 )
 
 /** Wandelt die Geschwindigkeit (0.75x-2x) in eine Edge-TTS-Prozentangabe um. */
 private fun ratePercent(speed: Float): Int =
     ((speed - 1f) * 100f).toInt().coerceIn(-50, 100)
 
-/** Baut die Seiten des Erklärvideos aus einer Entdeckung. */
-private fun buildSlides(d: Discovery): List<Slide> = listOf(
-    Slide("Das Objekt", d.explanation.title, "📸", showPhoto = true),
-    Slide("Was ist das?", d.explanation.summary, "❓"),
-    Slide("Wie funktioniert es?", d.explanation.howItWorks, "⚙️"),
-    Slide("Wofür wird es verwendet?", d.explanation.usage, "🎯"),
-    Slide("Praktische Tipps", d.explanation.practical, "💡"),
-    Slide("Interessante Fakten", d.explanation.facts.joinToString("\n") { "• " + it }, "🌟"),
-    Slide(
-        "Sicherheit",
-        d.explanation.safety.ifBlank {
-            "Für dieses Objekt sind keine besonderen Sicherheitshinweise nötig."
-        },
-        "⚠️"
-    ),
-    Slide(
+/**
+ * Baut die Seiten des Erklärvideos aus einer Entdeckung. Die Szenenauswahl
+ * passt sich der gewählten Ziellänge an: "30" kompakt (wenige Szenen),
+ * "60"/"auto" der Standard-Umfang, "90" mit eigenen Fakten-Szenen für
+ * ausführliche Erklärungen. Die tatsächliche Dauer folgt der Sprechzeit.
+ */
+private fun buildSlides(d: Discovery, length: String): List<Slide> {
+    val e = d.explanation
+    val continueSlide = Slide(
         "Weiter lernen",
         "Unter dem Ergebnis findest du echte Links zu Wikipedia, YouTube und weiteren Quellen. " +
             "Viel Spaß beim Entdecken!",
         "🎓"
     )
-)
+    if (length == "30") {
+        // Kompakt: das Wichtigste in wenigen Szenen (~30 Sekunden Sprechzeit)
+        val slides = mutableListOf(
+            Slide("Das Objekt", e.title, "📸", showPhoto = true),
+            Slide("Was ist das?", e.summary, "❓"),
+            Slide(
+                "Gut zu wissen",
+                listOfNotNull(
+                    e.practical.ifBlank { null },
+                    e.facts.firstOrNull()?.let { "• " + it }
+                ).joinToString("\n\n"),
+                "💡"
+            )
+        )
+        if (e.safety.isNotBlank()) slides.add(Slide("Sicherheit", e.safety, "⚠️"))
+        slides.add(continueSlide)
+        return slides
+    }
+    val slides = mutableListOf(
+        Slide("Das Objekt", e.title, "📸", showPhoto = true),
+        Slide("Was ist das?", e.summary, "❓"),
+        Slide("Wie funktioniert es?", e.howItWorks, "⚙️"),
+        Slide("Wofür wird es verwendet?", e.usage, "🎯"),
+        Slide("Praktische Tipps", e.practical, "💡")
+    )
+    if (length == "90" && e.facts.isNotEmpty()) {
+        // Ausführlich: jeder Faktenpunkt bekommt eine eigene Szene (~90 Sekunden)
+        e.facts.forEachIndexed { i, f -> slides.add(Slide("Fakt " + (i + 1), f, "🌟")) }
+    } else {
+        slides.add(Slide("Interessante Fakten", e.facts.joinToString("\n") { "• " + it }, "🌟"))
+    }
+    slides.add(
+        Slide(
+            "Sicherheit",
+            e.safety.ifBlank {
+                "Für dieses Objekt sind keine besonderen Sicherheitshinweise nötig."
+            },
+            "⚠️"
+        )
+    )
+    slides.add(continueSlide)
+    return slides
+}
 
 /** Erklärvideo: Foto, Themenbilder und Textkarten mit mehreren Stimmen (System oder Edge-TTS), Geschwindigkeit und MP4-Download. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -157,12 +198,19 @@ fun VideoScreen(
         return
     }
 
-    val slides = remember(discovery.id) { buildSlides(discovery) }
+    val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
+
+    // Ziel-Länge des Videos: steuert die Szenenauswahl (und die Textlänge
+    // neuer Foto-Analysen über das KI-Profil).
+    var videoLength by rememberSaveable {
+        mutableStateOf(prefs.getString("video_length", "auto") ?: "auto")
+    }
+    val slides = remember(discovery.id, videoLength) { buildSlides(discovery, videoLength) }
     val bitmap = remember(discovery.id) { Images.loadThumbnail(discovery.imagePath, 720) }
 
     // Passende, frei lizenzierte Online-Themenbilder je Szene (falls online verfügbar)
-    val webImages = remember(discovery.id) { mutableStateOf<List<WebImages.WebImage?>?>(null) }
-    LaunchedEffect(discovery.id) {
+    val webImages = remember(discovery.id, videoLength) { mutableStateOf<List<WebImages.WebImage?>?>(null) }
+    LaunchedEffect(discovery.id, slides) {
         webImages.value = null
         val queries = WebImages.queriesForSlides(
             discovery.explanation.title,
@@ -173,14 +221,20 @@ fun VideoScreen(
     }
 
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
-    val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
     val speedLabels = remember {
         mapOf(0.75f to "0,75x", 1f to "1x", 1.25f to "1,25x", 1.5f to "1,5x", 2f to "2x")
     }
 
-    // Gratis Online-Stimmen (Edge-TTS) aus den Einstellungen
-    val edgeA = remember { prefs.getString("edge_voice_a", "") ?: "" }
-    val edgeB = remember { prefs.getString("edge_voice_b", "") ?: "" }
+    // Gratis Online-Stimmen (Edge-TTS) aus den Einstellungen. Sie folgen
+    // automatisch der Antwort-Sprache des KI-Profils (z. B. Englisch im
+    // Sprachenlernen-Profil), ohne neue Stimmen wählen zu müssen.
+    val aiLang = remember { prefs.getString("ai_language", "de") ?: "de" }
+    val edgeA = remember(aiLang) {
+        EdgeTTS.resolveVoice(prefs.getString("edge_voice_a", "") ?: "", aiLang, 0)
+    }
+    val edgeB = remember(aiLang) {
+        EdgeTTS.resolveVoice(prefs.getString("edge_voice_b", "") ?: "", aiLang, 1)
+    }
     val useEdge = edgeA.isNotBlank() || edgeB.isNotBlank()
 
     var page by remember { mutableIntStateOf(0) }
@@ -224,6 +278,21 @@ fun VideoScreen(
     var edgeLoading by remember { mutableStateOf(false) }
     var edgeError by remember { mutableStateOf<String?>(null) }
 
+    // Audio-Export: nur die gesprochene Erklärung, ohne Video
+    var audioBusy by remember { mutableStateOf(false) }
+    var audioError by remember { mutableStateOf<String?>(null) }
+    var audioResult by remember { mutableStateOf<VideoExporter.AudioExportResult?>(null) }
+    var audioPlaying by remember { mutableStateOf(false) }
+    var audioPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    // Geschätzte Länge der aktuellen Szenenauswahl: Wortzahl → Sprechzeit
+    // (ca. 2,6 Wörter pro Sekunde) plus Szenen-Pausen, Intro und Outro.
+    val estSeconds = remember(slides, speed) {
+        val words = slides.sumOf { s ->
+            (s.title + " " + s.text).split(Regex("\\s+")).count { it.isNotBlank() }
+        }
+        (words / (2.6f * speed)).toInt() + slides.size * 2 + 5
+    }
+
     fun speakCurrent(engine: TextToSpeech) {
         val slide = slides[page]
         engine.setSpeechRate(speed * 0.95f)
@@ -262,13 +331,18 @@ fun VideoScreen(
             TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 engine?.let { ttsEngine ->
-                    ttsEngine.setLanguage(Locale.GERMANY)
-                    val germanVoices = try {
-                        ttsEngine.voices?.filter { it.locale.language == "de" } ?: emptyList()
+                    // Sprachausgabe folgt der Antwort-Sprache des KI-Profils;
+                    // sind dafür keine Stimmen installiert, greifen die
+                    // deutschen Stimmen als Fallback.
+                    ttsEngine.setLanguage(Locale.forLanguageTag(aiLang))
+                    val allVoices = try {
+                        ttsEngine.voices ?: emptyList<Voice>()
                     } catch (e: Exception) {
                         emptyList<Voice>()
                     }
-                    val sorted = germanVoices.sortedBy { it.name }
+                    val langVoices = allVoices.filter { it.locale.language == aiLang }
+                    val picked = if (langVoices.isNotEmpty()) langVoices else allVoices.filter { it.locale.language == "de" }
+                    val sorted = picked.sortedBy { it.name }
                     if (sorted.isNotEmpty()) {
                         val nameA = prefs.getString("tts_voice_a", null)
                         val nameB = prefs.getString("tts_voice_b", null)
@@ -327,6 +401,9 @@ fun VideoScreen(
         onDispose {
             player?.release()
             player = null
+            audioPlayer?.release()
+            audioPlayer = null
+            audioPlaying = false
         }
     }
 
@@ -360,7 +437,9 @@ fun VideoScreen(
         edgeError = null
         try {
             val mp3 = withContext(Dispatchers.IO) {
-                val f = File(context.cacheDir, "www_edge_s_" + discovery.id + "_" + page + "_" + rp + ".mp3")
+                // Cache-Name enthält die Stimme, damit nach einem Sprachwechsel
+                // im KI-Profil keine alte Sprachversion abgespielt wird.
+                val f = File(context.cacheDir, "www_edge_s_" + discovery.id + "_" + page + "_" + rp + "_" + voice.hashCode() + ".mp3")
                 if (!f.exists() || f.length() < 200L) {
                     EdgeTTS.synthesizeToMp3(slide.title + ". " + slide.text, voice, rp, f, ssml = true)
                 }
@@ -436,84 +515,139 @@ fun VideoScreen(
             val slide = slides[page]
             val palette = slidePalettes[page % slidePalettes.size]
 
-            if (slide.showPhoto && bitmap != null) {
-                Card(shape = RoundedCornerShape(16.dp)) {
+            // Vorschau im Design des fertigen Videos: dieselben Navy-Töne,
+            // Szenen-Chip, Wortmarke, Glas-Panel mit Titel & Text und
+            // Fortschrittsbalken wie im Export – so sieht man vor dem
+            // Speichern genau, wie das Video aussehen wird.
+            val previewBmp = if (slide.showPhoto) {
+                bitmap
+            } else {
+                val wi = webImages.value?.getOrNull(page)
+                if (wi != null) Images.loadThumbnail(wi.filePath, 900) else null
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(if (videoFormat.startsWith("landscape")) 16f / 9f else 9f / 16f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(
+                        brush = Brush.verticalGradient(listOf(palette.top, palette.bottom))
+                    )
+            ) {
+                if (previewBmp != null) {
                     Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "Foto der Entdeckung",
+                        bitmap = previewBmp.asImageBitmap(),
+                        contentDescription = if (slide.showPhoto) "Foto der Entdeckung" else "Themenbild (frei lizenziert)",
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(220.dp),
+                            .fillMaxHeight(0.55f)
+                            .align(Alignment.TopCenter),
                         contentScale = ContentScale.Crop
                     )
-                }
-                Spacer(Modifier.height(20.dp))
-            } else {
-                // Online gefundenes Themenbild mit Quellenangabe (Videotext-Stil)
-                val webImage = webImages.value?.getOrNull(page)
-                if (webImage != null) {
-                    val webBmp = Images.loadThumbnail(webImage.filePath, 900)
-                    if (webBmp != null) {
-                        Card(shape = RoundedCornerShape(16.dp)) {
-                            Image(
-                                bitmap = webBmp.asImageBitmap(),
-                                contentDescription = "Themenbild (frei lizenziert)",
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(220.dp),
-                                contentScale = ContentScale.Crop
+                    // Weiche Abdunklung am Bildrand, wie die Vignette im Video
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .fillMaxHeight(0.55f)
+                            .align(Alignment.TopCenter)
+                            .background(
+                                Brush.verticalGradient(listOf(Color.Transparent, Color(0x66000000)))
                             )
-                        }
+                    )
+                } else if (slide.emoji.isNotBlank()) {
+                    Text(
+                        slide.emoji,
+                        fontSize = 56.sp,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(top = 24.dp)
+                    )
+                }
+                // Szenen-Chip (wie im Video)
+                Text(
+                    "Szene " + (page + 1) + "/" + slides.size,
+                    color = Color.White.copy(alpha = 0.9f),
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp)
+                        .background(Color(0x33000000), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                )
+                // Wortmarke (wie im Video)
+                Text(
+                    "Wer Wie Was",
+                    color = Color.White.copy(alpha = 0.75f),
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 10.dp, end = 12.dp)
+                )
+                // Glas-Panel mit Titel & Text (wie die Textebene im Video)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(14.dp)
+                        .background(Color(0xCC060A1A), RoundedCornerShape(20.dp))
+                        .padding(horizontal = 16.dp, vertical = 14.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(56.dp)
+                            .height(4.dp)
+                            .background(Color(0xFF4285F4), RoundedCornerShape(2.dp))
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = slide.title,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (slide.text.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
                         Text(
-                            text = "Bild: " + webImage.credit,
-                            style = MaterialTheme.typography.bodySmall,
+                            text = slide.text,
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium,
                             textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                             modifier = Modifier.fillMaxWidth()
                         )
-                        Spacer(Modifier.height(16.dp))
                     }
                 }
-            }
-
-            if (slide.emoji.isNotBlank()) {
+                // Fortschrittsbalken (wie im Video)
                 Box(
                     modifier = Modifier
-                        .size(140.dp)
-                        .background(
-                            brush = Brush.linearGradient(listOf(palette.top, palette.bottom)),
-                            shape = RoundedCornerShape(28.dp)
-                        ),
-                    contentAlignment = Alignment.Center
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .height(5.dp)
+                        .background(Color(0x28FFFFFF))
                 ) {
-                    Text(slide.emoji, fontSize = 64.sp)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth((page + 1f) / slides.size)
+                            .background(Color(0xFF4285F4))
+                    )
                 }
-                Spacer(Modifier.height(20.dp))
             }
-
-            Text(
-                text = slide.title,
-                style = MaterialTheme.typography.headlineSmall,
-                textAlign = TextAlign.Center
-            )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = slide.text,
-                style = MaterialTheme.typography.bodyLarge,
-                textAlign = TextAlign.Center
-            )
-            Spacer(Modifier.height(24.dp))
-
-            LinearProgressIndicator(
-                progress = { (page + 1f) / slides.size },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Szene " + (page + 1) + " von " + slides.size,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-            )
+            // Quellenzeile für frei lizenzierte Themenbilder (wie im Video)
+            if (!slide.showPhoto) {
+                val wi = webImages.value?.getOrNull(page)
+                if (wi != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "Bild: " + wi.credit,
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
             Spacer(Modifier.height(12.dp))
 
             Row(
@@ -591,7 +725,9 @@ fun VideoScreen(
                     text = "Online-Stimmen aktiv (Edge-TTS, gratis, ohne API-Schlüssel): Moderator " +
                         EdgeTTS.labelFor(if (edgeA.isNotBlank()) edgeA else edgeB) +
                         ", Erklärbär " + EdgeTTS.labelFor(if (edgeB.isNotBlank()) edgeB else edgeA) +
-                        ". Benötigt Internet.",
+                        "." +
+                        (if (aiLang != "de") " Die Stimmen folgen der Profil-Sprache " + OnlineAnalyzer.languageName(aiLang) + "." else "") +
+                        " Benötigt Internet.",
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
@@ -615,7 +751,8 @@ fun VideoScreen(
                 Text(
                     text = "Moderator und Erklärbär wechseln sich pro Szene ab. " +
                         "Die Stimmen kannst du in den Einstellungen wählen." +
-                        (if (voiceB == null) " Auf diesem Gerät ist nur eine deutsche Stimme installiert – die zweite wird dann über die Tonhöhe simuliert." else ""),
+                        (if (voiceB == null) " Auf diesem Gerät ist nur eine Stimme installiert – die zweite wird dann über die Tonhöhe simuliert." else "") +
+                        (if (aiLang != "de") " Fehlt eine Stimme für die Profil-Sprache " + OnlineAnalyzer.languageName(aiLang) + ", greift die deutsche Sprachausgabe." else ""),
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
@@ -648,6 +785,53 @@ fun VideoScreen(
                     }
                 }
             }
+            Spacer(Modifier.height(20.dp))
+
+            Text(
+                "Ziel-Länge des Videos",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf(
+                    "auto" to "Automatik",
+                    "30" to "~30 s",
+                    "60" to "~60 s",
+                    "90" to "~90 s"
+                ).forEach { (key, label) ->
+                    OutlinedButton(
+                        onClick = {
+                            videoLength = key
+                            prefs.edit().putString("video_length", key).apply()
+                            page = page.coerceIn(0, slides.size - 1)
+                        },
+                        colors = if (videoLength == key) {
+                            ButtonDefaults.outlinedButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        } else {
+                            ButtonDefaults.outlinedButtonColors()
+                        }
+                    ) {
+                        Text(label)
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Weniger Szenen für kurze Videos, eigene Fakten-Szenen für lange. " +
+                    "Aktuell geschätzte Länge der Auswahl: ca. " + estSeconds + " Sekunden" +
+                    (if (videoLength == "30" || videoLength == "90")
+                        " – neue Foto-Analysen schreibt die KI dann von sich aus passend dazu."
+                    else "") + ".",
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
             Spacer(Modifier.height(20.dp))
 
             Text(
@@ -806,7 +990,8 @@ fun VideoScreen(
                         edgeA,
                         edgeB,
                         voiceA?.name ?: "",
-                        voiceB?.name ?: ""
+                        voiceB?.name ?: "",
+                        aiLang
                     )
                 },
                 enabled = !exporting
@@ -832,6 +1017,102 @@ fun VideoScreen(
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+
+            // Audio-Export: nur die gesprochene Erklärung als Audiodatei –
+            // zum Anhören und Teilen ganz ohne Video-Export.
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = {
+                    playing = false
+                    audioBusy = true
+                    audioError = null
+                    scope.launch {
+                        try {
+                            val result = withContext(Dispatchers.IO) {
+                                exportAudioOnly(
+                                    context, discovery, slides, speed,
+                                    useEdge, edgeA, edgeB, voiceA, voiceB, aiLang
+                                )
+                            }
+                            audioResult = result
+                        } catch (e: Exception) {
+                            audioError = "Audio-Export fehlgeschlagen: " + (e.message ?: "unbekannter Fehler")
+                        } finally {
+                            audioBusy = false
+                        }
+                    }
+                },
+                enabled = !audioBusy && !exporting,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (audioBusy) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.size(8.dp))
+                    Text("Audio wird erstellt …")
+                } else {
+                    Text("Nur Audio speichern (Erklärung ohne Video)")
+                }
+            }
+            val audioErrMsg = audioError
+            if (audioErrMsg != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    audioErrMsg,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            val audio = audioResult
+            if (audio != null && audio.shareUri != null) {
+                val aUri = audio.shareUri
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val p = audioPlayer
+                            if (p != null) {
+                                p.stop()
+                                p.release()
+                                audioPlayer = null
+                                audioPlaying = false
+                            } else {
+                                runCatching {
+                                    val np = MediaPlayer()
+                                    np.setDataSource(context, aUri)
+                                    np.prepare()
+                                    np.setOnCompletionListener {
+                                        audioPlaying = false
+                                        runCatching { np.release() }
+                                        if (audioPlayer === np) audioPlayer = null
+                                    }
+                                    np.start()
+                                    audioPlayer = np
+                                    audioPlaying = true
+                                }.onFailure {
+                                    audioError = "Audio konnte nicht abgespielt werden: " +
+                                        (it.message ?: "unbekannter Fehler")
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (audioPlaying) "Audio stoppen" else "Audio anhören") }
+                    OutlinedButton(
+                        onClick = { shareAudio(context, aUri, audio.mime) },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Audio teilen …") }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    audio.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
             }
             val message = exportMessage
@@ -928,6 +1209,73 @@ fun VideoScreen(
             }
             Spacer(Modifier.height(24.dp))
         }
+    }
+}
+
+/**
+ * Exportiert nur die gesprochene Erklärung als Audiodatei: Bei Edge-Stimmen
+ * werden die fertigen Szenen-MP3s direkt aneinandergereiht (echtes MP3, ohne
+ * Qualitätsverlust – die Dateien teilt der Audio-Export mit dem Video-Export,
+ * sodass beides gegenseitig vom Cache profitiert). Bei System-Stimmen entsteht
+ * über die Android-Sprachausgabe eine normalisierte WAV-Datei.
+ */
+private fun exportAudioOnly(
+    context: Context,
+    discovery: Discovery,
+    slides: List<Slide>,
+    speed: Float,
+    useEdge: Boolean,
+    edgeA: String,
+    edgeB: String,
+    voiceA: Voice?,
+    voiceB: Voice?,
+    speechLang: String
+): VideoExporter.AudioExportResult {
+    // Dateiname: Objektname (gesäubert) + Entdeckungs-ID
+    val cleanTitle = discovery.explanation.title
+        .replace(Regex("[^A-Za-z0-9ÄÖÜäöüß .-]"), "")
+        .trim().take(40)
+    val base = ("WerWieWas-" + cleanTitle + "-" + discovery.id.take(8))
+        .replace(Regex("\\s+"), "-")
+    if (useEdge) {
+        val vA = if (edgeA.isNotBlank()) edgeA else edgeB
+        val vB = if (edgeB.isNotBlank()) edgeB else edgeA
+        val rp = ratePercent(speed)
+        val out = ByteArrayOutputStream()
+        slides.forEachIndexed { i, s ->
+            val voice = if (i % 2 == 1) vB else vA
+            val mp3 = File(context.cacheDir, "www_exps_" + discovery.id + "_" + i + "_" + rp + "_" + voice.hashCode() + ".mp3")
+            if (!mp3.exists() || mp3.length() < 200L) {
+                EdgeTTS.synthesizeToMp3(s.title + ". " + s.text, voice, rp, mp3, ssml = true)
+            }
+            out.write(mp3.readBytes())
+        }
+        return VideoExporter.saveAudioMp3(context, base, out.toByteArray())
+    }
+    return VideoExporter.exportAudioWav(
+        context,
+        slides.map { VideoExporter.SlideData(it.title, it.text, it.emoji, null) },
+        voiceA,
+        voiceB,
+        speed,
+        speechLang
+    )
+}
+
+/** Übergibt die exportierte Audiodatei an eine Ziel-App (z. B. WhatsApp, Bluetooth). */
+private fun shareAudio(context: Context, uri: Uri, mime: String) {
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = mime
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_SUBJECT, "Wer Wie Was – Erklärung als Audio")
+        clipData = ClipData.newRawUri("audio", uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching {
+        context.startActivity(
+            Intent.createChooser(send, "Audio teilen")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }
 

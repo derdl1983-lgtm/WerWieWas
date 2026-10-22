@@ -140,6 +140,8 @@ object VideoExporter {
      * musicMood: Stimmung der Hintergrundmusik (neugierig / froehlich / ruhig);
      * cacheKey: Entdeckungs-ID für den Absturz-Schutz (fertige Spuren werden im
      * App-Cache abgelegt und beim nächsten Versuch wiederverwendet);
+     * speechLang: Antwort-Sprache des KI-Profils – die System-Sprachausgabe
+     * wird auf diese Sprache eingestellt (folgt der Profil-Sprache);
      */
     fun export(
         context: Context,
@@ -155,6 +157,7 @@ object VideoExporter {
         backgroundMusic: Boolean = true,
         musicMood: String = "neugierig",
         cacheKey: String = "",
+        speechLang: String = "de",
         onProgress: (progress: Float) -> Unit
     ): ExportResult {
         if (slides.isEmpty()) throw ExportException("Keine Inhalte zum Export vorhanden.")
@@ -168,7 +171,7 @@ object VideoExporter {
         // Absturz-Schutz: Fertig encodierte Ton-/Videospuren werden im App-Cache
         // abgelegt. Bricht der Export (oder die App) mitten ab, läuft der nächste
         // Versuch mit den bereits fertigen Spuren weiter statt komplett neu.
-        val cacheHash = trackCacheHash(slides, rate, voiceA?.name, voiceB?.name, preAudio, burnedSubs, backgroundMusic, musicMood, videoWidth, videoHeight)
+        val cacheHash = trackCacheHash(slides, rate, voiceA?.name, voiceB?.name, preAudio, burnedSubs, backgroundMusic, musicMood, videoWidth, videoHeight, speechLang)
         val useCache = cacheKey.isNotBlank()
         val audioCacheFile = if (useCache) File(context.cacheDir, "www_track_" + cacheKey + "_" + cacheHash + "_a.bin") else null
         val videoCacheFile = if (useCache) File(context.cacheDir, "www_track_" + cacheKey + "_" + cacheHash + "_v.bin") else null
@@ -211,7 +214,7 @@ object VideoExporter {
         val fadeUs = (FADE_SECONDS * 1_000_000).toLong()
         val silenceUs = (SILENCE_SECONDS * 1_000_000).toLong()
 
-        val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, preAudio) { p ->
+        val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, preAudio, speechLang) { p ->
             onProgress(0.05f + 0.25f * p.coerceIn(0f, 1f))
         }
         onProgress(0.30f)
@@ -537,6 +540,7 @@ object VideoExporter {
         voiceB: Voice?,
         rate: Float,
         preAudio: List<File?>?,
+        speechLang: String = "de",
         progress: (Float) -> Unit = { }
     ): List<SlideAudio> {
         val provided: List<File?> = slides.mapIndexed { i, _ -> preAudio?.getOrNull(i) }
@@ -561,7 +565,9 @@ object VideoExporter {
                 progress(1f)
                 return slides.map { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
             }
-            tts.language = Locale.GERMANY
+            // Sprache der System-Sprachausgabe folgt der Antwort-Sprache des
+            // KI-Profils (Standard Deutsch).
+            tts.language = Locale.forLanguageTag(if (speechLang.isBlank()) "de" else speechLang)
             tts.setSpeechRate(rate)
             val result = mutableListOf<SlideAudio>()
             for ((index, slide) in slides.withIndex()) {
@@ -1109,6 +1115,129 @@ object VideoExporter {
         return ExportResult("Video gespeichert unter: " + target.absolutePath, shareUri)
     }
 
+    /**
+     * Ergebnis eines Audio-Exports (nur die gesprochene Erklärung, ohne Video):
+     * Beschreibung des Speicherorts, eine Content-URI fürs Teilen und der
+     * zugehörige MIME-Typ ("audio/mpeg" bzw. "audio/wav").
+     */
+    data class AudioExportResult(val message: String, val shareUri: Uri?, val mime: String)
+
+    /**
+     * Speichert die gesprochene Erklärung als Audiodatei: fertige Edge-TTS-MP3s
+     * werden direkt aneinandergereiht (echtes MP3, ohne Qualitätsverlust und
+     * ohne erneute Encodierung). Die Datei liegt unter Musik/WerWieWas.
+     */
+    fun saveAudioMp3(context: Context, base: String, mp3: ByteArray): AudioExportResult =
+        saveAudio(context, base, mp3, "audio/mpeg", ".mp3")
+
+    /**
+     * Exportiert die gesprochene Erklärung mit den System-Stimmen als WAV-Datei
+     * (44,1 kHz Stereo, mit 0,7 Sekunden Pause zwischen den Szenen und auf
+     * YouTube-Lautstärke von −14 LUFS normalisiert). Fallback, wenn keine
+     * Edge-TTS-Stimmen eingerichtet sind.
+     */
+    fun exportAudioWav(
+        context: Context,
+        slides: List<SlideData>,
+        voiceA: Voice?,
+        voiceB: Voice?,
+        rate: Float,
+        speechLang: String = "de",
+        onProgress: (Float) -> Unit = { }
+    ): AudioExportResult {
+        val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, null, speechLang) { p ->
+            onProgress(0.1f + 0.6f * p.coerceIn(0f, 1f))
+        }
+        onProgress(0.75f)
+        val lead = (0.4 * TARGET_RATE * 2).toInt()
+        val gap = (0.7 * TARGET_RATE * 2).toInt()
+        val out = ByteArrayOutputStream()
+        out.write(ByteArray(lead))
+        for (a in audios) {
+            out.write(toMonoTarget(a))
+            out.write(ByteArray(gap))
+        }
+        val monoPcm = out.toByteArray()
+        // Mono auf Stereo verdoppeln, damit die Lautheits-Normalisierung
+        // (die auf Stereo arbeitet) greift.
+        val stereo = ByteArray(monoPcm.size * 2)
+        var i = 0
+        var o = 0
+        while (i < monoPcm.size) {
+            val b = monoPcm[i]
+            val b2 = monoPcm[i + 1]
+            stereo[o] = b
+            stereo[o + 1] = b2
+            stereo[o + 2] = b
+            stereo[o + 3] = b2
+            i += 2
+            o += 4
+        }
+        val normalized = normalizeLoudness(stereo)
+        onProgress(0.9f)
+        val result = saveAudio(context, base, writeWavBytes(normalized, TARGET_RATE, 2), "audio/wav", ".wav")
+        onProgress(1f)
+        return result
+    }
+
+    /** Speichert eine Audiodatei im Musik-Ordner (ab Android 10) bzw. im App-Ordner (ältere Geräte). */
+    private fun saveAudio(context: Context, base: String, bytes: ByteArray, mime: String, ext: String): AudioExportResult {
+        val fileName = base + ext
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.Audio.Media.DISPLAY_NAME, fileName)
+                put(MediaStore.Audio.Media.MIME_TYPE, mime)
+                put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/WerWieWas")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+                ?: throw ExportException("Audio konnte nicht gespeichert werden.")
+            context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                ?: throw ExportException("Audio konnte nicht gespeichert werden.")
+            return AudioExportResult("Audio gespeichert unter Musik/WerWieWas/" + fileName, uri, mime)
+        }
+        val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir, "audio")
+        dir.mkdirs()
+        val target = File(dir, fileName)
+        FileOutputStream(target).use { it.write(bytes) }
+        // Content-URI über den FileProvider, damit das Audio direkt geteilt werden kann
+        val shareUri = runCatching {
+            FileProvider.getUriForFile(context, context.packageName + ".fileprovider", target)
+        }.getOrNull()
+        return AudioExportResult("Audio gespeichert unter: " + target.absolutePath, shareUri, mime)
+    }
+
+    /** Schreibt 16-Bit-PCM als WAV-Bytes (RIFF-Header + Rohdaten). */
+    private fun writeWavBytes(pcm: ByteArray, sampleRate: Int, channels: Int): ByteArray {
+        val blockAlign = channels * 2
+        val byteRate = sampleRate * blockAlign
+        val out = ByteArray(44 + pcm.size)
+        fun le32(v: Int, off: Int) {
+            out[off] = (v and 0xff).toByte()
+            out[off + 1] = ((v shr 8) and 0xff).toByte()
+            out[off + 2] = ((v shr 16) and 0xff).toByte()
+            out[off + 3] = ((v shr 24) and 0xff).toByte()
+        }
+        fun le16(v: Int, off: Int) {
+            out[off] = (v and 0xff).toByte()
+            out[off + 1] = ((v shr 8) and 0xff).toByte()
+        }
+        "RIFF".toByteArray().copyInto(out, 0)
+        le32(36 + pcm.size, 4)
+        "WAVE".toByteArray().copyInto(out, 8)
+        "fmt ".toByteArray().copyInto(out, 12)
+        le32(16, 16)
+        le16(1, 20)
+        le16(channels, 22)
+        le32(sampleRate, 24)
+        le32(byteRate, 28)
+        le16(blockAlign, 32)
+        le16(16, 34)
+        "data".toByteArray().copyInto(out, 36)
+        le32(pcm.size, 40)
+        pcm.copyInto(out, 44)
+        return out
+    }
+
     /** Baut aus Szenen und Zeitbereichen den Inhalt einer SRT-Untertiteldatei. */
     private fun buildSrt(slides: List<SlideData>, ranges: List<LongRange>): String {
         val sb = StringBuilder()
@@ -1471,7 +1600,8 @@ object VideoExporter {
         music: Boolean,
         mood: String,
         width: Int,
-        height: Int
+        height: Int,
+        speechLang: String = "de"
     ): String {
         var h = 17
         for (s in slides) {
@@ -1490,6 +1620,7 @@ object VideoExporter {
         h = h * 31 + mood.hashCode()
         h = h * 31 + width
         h = h * 31 + height
+        h = h * 31 + speechLang.hashCode()
         return Integer.toHexString(h)
     }
 
