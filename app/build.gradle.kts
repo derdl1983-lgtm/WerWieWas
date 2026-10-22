@@ -6,14 +6,15 @@ plugins {
 
 android {
     namespace = "de.derdl1983.weriewas"
+
     compileSdk = 34
 
     defaultConfig {
         applicationId = "de.derdl1983.weriewas"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
     }
 
     // Festes Debug-Keystore: Ohne das signiert jeder CI-Lauf mit einem neuen Zufallsschlüssel,
@@ -76,4 +77,3 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
-

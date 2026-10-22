@@ -53,6 +53,7 @@ import de.derdl1983.weriewas.data.LabelConfidence
 import de.derdl1983.weriewas.data.PendingStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import de.derdl1983.weriewas.util.Images
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
@@ -129,7 +130,7 @@ fun AnalyzeScreen(
 
     val providerLabel = OnlineAnalyzer.label(OnlineAnalyzer.currentProvider(context))
 
-    // Speichern schreibt Dateien – bewusst außerhalb des Main-Threads.
+    // Speichern schreibt Dateien – bewusst außerhalb des Haupt-Threads.
     suspend fun saveAndFinish(explanation: Explanation) {
         val discovery = Discovery(
             id = UUID.randomUUID().toString(),
@@ -158,8 +159,15 @@ fun AnalyzeScreen(
                     val explanation = OnlineAnalyzer.analyze(listOf(imagePath) + extraPaths, config)
                     saveAndFinish(explanation)
                 }
-            } catch (e: Exception) {
-                error = "Analyse fehlgeschlagen: " + (e.message ?: "unbekannter Fehler")
+            } catch (e: CancellationException) {
+                // Bildschirm wurde während der Analyse verlassen – sauber beenden,
+                // damit das Abbrechen nicht wie ein Fehler behandelt wird.
+                throw e
+            } catch (t: Throwable) {
+                // Auch schwerwiegende Fehler (z. B. OutOfMemoryError) dürfen die
+                // App niemals zum Absturz bringen: Der Nutzer sieht die Meldung
+                // und kann das Foto für später merken.
+                error = "Analyse fehlgeschlagen: " + (t.message ?: t.javaClass.simpleName)
             } finally {
                 running = false
             }
@@ -172,7 +180,7 @@ fun AnalyzeScreen(
             withContext(Dispatchers.IO + NonCancellable) {
                 // NonCancellable: Das Foto wird garantiert in der Warteschlange
                 // gespeichert, auch wenn der Nutzer den Bildschirm sofort verlässt.
-                PendingStore.add(context, listOf(imagePath) + extraPaths)
+                runCatching { PendingStore.add(context, listOf(imagePath) + extraPaths) }
             }
             Toast.makeText(
                 context,

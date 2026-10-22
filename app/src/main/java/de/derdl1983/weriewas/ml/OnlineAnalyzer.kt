@@ -498,7 +498,13 @@ object OnlineAnalyzer {
         val textPart = JSONObject().put("type", "text").put("text", promptFor(config))
         val contentParts = JSONArray().put(textPart)
         dataUrls.forEach { url ->
-            contentParts.put(JSONObject().put("type", "image_url").put("image_url", url))
+            // Wichtig: "image_url" muss ein OBJEKT mit Feld "url" sein – ein nackter
+            // String führt bei der API zu „HTTP 400 – Invalid type for image_url“.
+            contentParts.put(
+                JSONObject()
+                    .put("type", "image_url")
+                    .put("image_url", JSONObject().put("url", url))
+            )
         }
         val message = JSONObject().put("role", "user").put("content", contentParts)
         val messages = JSONArray().put(message)
@@ -695,6 +701,7 @@ object OnlineAnalyzer {
         return base.copy(links = KnowledgeBase.buildPublicLinks(base))
     }
 }
+
 
 
 

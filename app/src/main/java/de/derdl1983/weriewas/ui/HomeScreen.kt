@@ -38,6 +38,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,6 +63,7 @@ import de.derdl1983.weriewas.data.PendingItem
 import de.derdl1983.weriewas.data.PendingStore
 import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
@@ -120,37 +122,59 @@ fun HomeScreen(
     /** Sendet alle wartenden Fotos erneut an die KI – wird automatisch beim App-Start versucht. */
     fun processQueue() {
         if (queueRunning || pending.isEmpty()) return
-        val config = OnlineAnalyzer.loadConfig(context) ?: return
+        val config = try {
+            OnlineAnalyzer.loadConfig(context) ?: return
+        } catch (t: Throwable) {
+            // Sicherheitsnetz: Ein Fehler beim Lesen der Konfiguration (z. B. defekter
+            // Keystore) darf die App niemals zum Absturz bringen.
+            queueMessage = "Analyse konnte nicht vorbereitet werden: " +
+                (t.message ?: t.javaClass.simpleName)
+            return
+        }
         queueRunning = true
         queueMessage = null
-        scope.launch {
+        // Sicherheitsnetz für alle übrigen, nicht erwartbaren Fehler: Der Handler
+        // verhindert, dass eine Ausnahme die komplette App zum Absturz bringt.
+        val safetyNet = CoroutineExceptionHandler { _, t ->
+            queueRunning = false
+            queueMessage = "Unerwarteter Fehler beim Nachsenden: " +
+                (t.message ?: t.javaClass.simpleName)
+        }
+        scope.launch(safetyNet) {
             var doneCount = 0
+            var failedCount = 0
+            var firstError: String? = null
             try {
                 for (item in pending.toList()) {
-                    val explanation = withContext(Dispatchers.IO) {
-                        OnlineAnalyzer.analyze(item.paths, config)
+                    try {
+                        val explanation = withContext(Dispatchers.IO) {
+                            OnlineAnalyzer.analyze(item.paths, config)
+                        }
+                        val discovery = Discovery(
+                            id = UUID.randomUUID().toString(),
+                            imagePath = item.paths.first(),
+                            timestamp = System.currentTimeMillis(),
+                            labels = listOf(LabelConfidence(explanation.title, 1f)),
+                            explanation = explanation,
+                            extraPaths = item.paths.drop(1)
+                        )
+                        withContext(Dispatchers.IO) {
+                            DiscoveryStore.add(context, discovery)
+                            PendingStore.remove(context, item.id)
+                        }
+                        doneCount++
+                    } catch (e: CancellationException) {
+                        // Bildschirm wurde während der Analyse verlassen – sauber beenden,
+                        // damit das Abbrechen nicht wie ein Fehler behandelt wird.
+                        throw e
+                    } catch (t: Throwable) {
+                        // Auch schwerwiegende Fehler (z. B. OutOfMemoryError) dürfen die
+                        // App niemals zum Absturz bringen: Dieses Fotoset bleibt in der
+                        // Warteschlange, die übrigen werden weiterverarbeitet.
+                        failedCount++
+                        if (firstError == null) firstError = t.message ?: t.javaClass.simpleName
                     }
-                    val discovery = Discovery(
-                        id = UUID.randomUUID().toString(),
-                        imagePath = item.paths.first(),
-                        timestamp = System.currentTimeMillis(),
-                        labels = listOf(LabelConfidence(explanation.title, 1f)),
-                        explanation = explanation,
-                        extraPaths = item.paths.drop(1)
-                    )
-                    withContext(Dispatchers.IO) {
-                        DiscoveryStore.add(context, discovery)
-                        PendingStore.remove(context, item.id)
-                    }
-                    doneCount++
                 }
-            } catch (e: CancellationException) {
-                // Bildschirm wurde während der Analyse verlassen – sauber beenden,
-                // damit das Abbrechen nicht wie ein Fehler behandelt wird.
-                throw e
-            } catch (e: Exception) {
-                // Netz bleibt weg oder API-Fehler: Der Rest bleibt in der Warteschlange
-                queueMessage = "Nachsenden abgebrochen: " + (e.message ?: "unbekannter Fehler")
             } finally {
                 queueRunning = false
                 // NonCancellable: Der Zustand wird auch dann sicher aktualisiert, wenn
@@ -161,8 +185,17 @@ fun HomeScreen(
                     pending = PendingStore.loadAll(context)
                     stats = DiscoveryStore.loadAll(context)
                 }
-                if (doneCount > 0) {
-                    queueMessage = "$doneCount gemerkte Fotos erfolgreich analysiert."
+                when {
+                    doneCount > 0 && failedCount == 0 ->
+                        queueMessage = "$doneCount gemerkte Fotos erfolgreich analysiert."
+                    doneCount > 0 && failedCount > 0 ->
+                        queueMessage = "$doneCount gemerkte Fotos analysiert, " +
+                            "$failedCount fehlgeschlagen" +
+                            (if (firstError != null) " – $firstError" else "") + "."
+                    failedCount > 0 ->
+                        queueMessage = "Nachsenden fehlgeschlagen" +
+                            (if (firstError != null) ": $firstError" else "") +
+                            ". Die Fotos bleiben gemerkt."
                 }
             }
         }
@@ -171,11 +204,16 @@ fun HomeScreen(
     // Laden + automatischer Nachsende-Versuch, sobald die Startseite offen
     // ist und Netz da ist (Datei-I/O bewusst nicht auf dem Haupt-Thread).
     LaunchedEffect(Unit) {
-        val loadedPending = withContext(Dispatchers.IO) { PendingStore.loadAll(context) }
-        pending = loadedPending
-        stats = withContext(Dispatchers.IO) { DiscoveryStore.loadAll(context) }
-        if (loadedPending.isNotEmpty() && isOnline()) {
-            processQueue()
+        try {
+            val loadedPending = withContext(Dispatchers.IO) { PendingStore.loadAll(context) }
+            pending = loadedPending
+            stats = withContext(Dispatchers.IO) { DiscoveryStore.loadAll(context) }
+            if (loadedPending.isNotEmpty() && isOnline()) {
+                processQueue()
+            }
+        } catch (t: Throwable) {
+            // Sicherheitsnetz: Ein Fehler beim Laden darf die App niemals
+            // zum Absturz bringen – die Warteschlange bleibt unangetastet.
         }
     }
 
@@ -351,9 +389,26 @@ fun HomeScreen(
                                 )
                             }
                         } else {
-                            Button(onClick = { processQueue() }) {
+                            Button(onClick = { runCatching { processQueue() } }) {
                                 Text("Jetzt erneut analysieren")
                             }
+                        }
+                        TextButton(
+                            onClick = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        PendingStore.clearAll(context)
+                                    }
+                                    pending = emptyList()
+                                    queueMessage = "Warteschlange verworfen – die gemerkten Fotos wurden gelöscht."
+                                }
+                            }
+                        ) {
+                            Text(
+                                "Fotos verwerfen",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
                         }
                     }
                 }
@@ -475,5 +530,3 @@ private fun ActionCard(
         }
     }
 }
-
-
