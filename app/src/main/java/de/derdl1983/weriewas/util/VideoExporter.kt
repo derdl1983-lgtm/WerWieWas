@@ -644,7 +644,7 @@ object VideoExporter {
         }
         var bodySize = 42f * scale
         var bodyLayout = makeBody(bodySize)
-        while (top + bodyLayout.height > HEIGHT - 80f * scale && bodySize > 26f * scale) {
+        while (top + bodyLayout.height > HEIGHT - 170f * scale && bodySize > 26f * scale) {
             bodySize -= 4f * scale
             bodyLayout = makeBody(bodySize)
         }
@@ -652,7 +652,69 @@ object VideoExporter {
         canvas.translate((WIDTH - bodyLayout.width) / 2f, top)
         bodyLayout.draw(canvas)
         canvas.restore()
+
+        // Wasserzeichen: Logo-Marke + „Wer Wie Was“-Schriftzug in jeder Szene
+        drawWatermark(canvas)
         return bmp
+    }
+
+    /**
+     * Wasserzeichen: runde Badge mit der Logo-Marke (Kamera mit blauem
+     * Gehirn-Kreis) plus Schriftzug „Wer Wie Was“ mit blauem „Wie“,
+     * in der unteren linken Ecke jeder Szene.
+     */
+    private fun drawWatermark(canvas: Canvas) {
+        val cx = 88f * scale
+        val cy = HEIGHT - 74f * scale
+        val r = 30f * scale
+
+        val badge = Paint(Paint.ANTI_ALIAS_FLAG)
+        badge.color = Color.argb(210, 255, 255, 255)
+        val ink = Paint(Paint.ANTI_ALIAS_FLAG)
+        ink.color = Color.argb(235, 32, 33, 36)
+        val blue = Paint(Paint.ANTI_ALIAS_FLAG)
+        blue.color = Color.rgb(66, 133, 244)
+        val white = Paint(Paint.ANTI_ALIAS_FLAG)
+        white.color = Color.WHITE
+        val line = Paint(Paint.ANTI_ALIAS_FLAG)
+        line.color = Color.WHITE
+        line.style = Paint.Style.STROKE
+        line.strokeWidth = r * 0.10f
+        line.strokeCap = Paint.Cap.ROUND
+
+        val text = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        text.textSize = 30f * scale
+        text.isFakeBoldText = true
+        text.setShadowLayer(4f * scale, 0f, 2f * scale, Color.argb(130, 0, 0, 0))
+
+        // Runde Badge mit Kamera-Silhouette
+        canvas.drawCircle(cx, cy, r, badge)
+        canvas.drawRoundRect(
+            RectF(cx - r * 0.62f, cy - r * 0.42f, cx + r * 0.62f, cy + r * 0.42f),
+            r * 0.20f, r * 0.20f, ink
+        )
+        canvas.drawRoundRect(
+            RectF(cx - r * 0.28f, cy - r * 0.62f, cx + r * 0.28f, cy - r * 0.34f),
+            r * 0.10f, r * 0.10f, ink
+        )
+        val lens = r * 0.40f
+        canvas.drawCircle(cx, cy + r * 0.05f, lens, blue)
+        canvas.drawCircle(cx, cy + r * 0.05f, lens * 0.42f, white)
+        canvas.drawLine(cx - lens * 0.85f, cy - r * 0.26f, cx, cy + r * 0.05f, line)
+        canvas.drawLine(cx + lens * 0.85f, cy - r * 0.26f, cx, cy + r * 0.05f, line)
+        canvas.drawLine(cx, cy + r * 0.05f, cx, cy + r * 0.36f, line)
+
+        // Schriftzug „Wer Wie Was“ mit blauem „Wie“
+        val tx = cx + r + 16f * scale
+        val base = cy + text.textSize * 0.34f
+        text.color = Color.argb(225, 255, 255, 255)
+        canvas.drawText("Wer ", tx, base, text)
+        val w1 = text.measureText("Wer ")
+        text.color = Color.rgb(66, 133, 244)
+        canvas.drawText("Wie", tx + w1, base, text)
+        val w2 = text.measureText("Wie")
+        text.color = Color.argb(225, 255, 255, 255)
+        canvas.drawText(" Was", tx + w1 + w2, base, text)
     }
 
     /** Zeichnet eine Bitmap formatfüllend und mittig beschnitten in ein Zielrechteck. */

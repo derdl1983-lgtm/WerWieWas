@@ -1,4 +1,4 @@
 <resources>
     <color name="app_background">#FFF7FBF7</color>
-    <color name="ic_launcher_background">#FF2E7D32</color>
+    <color name="ic_launcher_background">#FFFFFFFF</color>
 </resources>
