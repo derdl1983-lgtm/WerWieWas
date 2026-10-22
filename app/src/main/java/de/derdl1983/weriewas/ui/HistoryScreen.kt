@@ -293,9 +293,10 @@ private fun HistoryItem(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (thumb != null) {
+            val t = thumb
+            if (t != null) {
                 Image(
-                    bitmap = thumb.asImageBitmap(),
+                    bitmap = t.asImageBitmap(),
                     contentDescription = null,
                     modifier = Modifier.size(64.dp),
                     contentScale = ContentScale.Crop
