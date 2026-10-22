@@ -122,6 +122,22 @@ private fun ratePercent(speed: Float): Int =
  * "60"/"auto" der Standard-Umfang, "90" mit eigenen Fakten-Szenen für
  * ausführliche Erklärungen. Die tatsächliche Dauer folgt der Sprechzeit.
  */
+/**
+ * Fakten-Szene mit echter Mini-Überschrift: Ist der erste Satz des Fakts
+ * kurz und folgt weiterer Text, dient er als Titel und nur der Rest als
+ * Szenentext – so wird nichts doppelt vorgelesen und die Karte bekommt
+ * trotzdem eine aussagekräftige Überschrift statt eines blassen „Fakt 2“.
+ * Fakten aus einem einzigen Satz behalten die klassische Nummerierung.
+ */
+private fun factScene(fact: String, index: Int): Slide {
+    val clean = fact.trim()
+    val m = Regex("^(.{10,42}?[.!?])\\s+(.{20,})$").find(clean)
+    val headline = m?.groupValues?.get(1)?.trim()
+    val rest = m?.groupValues?.get(2)?.trim()
+    return if (!headline.isNullOrBlank() && !rest.isNullOrBlank()) Slide(headline, rest, "🌟")
+    else Slide("Fakt " + (index + 1), clean, "🌟")
+}
+
 private fun buildSlides(d: Discovery, length: String): List<Slide> {
     val e = d.explanation
     val continueSlide = Slide(
@@ -157,7 +173,7 @@ private fun buildSlides(d: Discovery, length: String): List<Slide> {
     )
     if (length == "90" && e.facts.isNotEmpty()) {
         // Ausführlich: jeder Faktenpunkt bekommt eine eigene Szene (~90 Sekunden)
-        e.facts.forEachIndexed { i, f -> slides.add(Slide("Fakt " + (i + 1), f, "🌟")) }
+        e.facts.forEachIndexed { i, f -> slides.add(factScene(f, i)) }
     } else {
         slides.add(Slide("Interessante Fakten", e.facts.joinToString("\n") { "• " + it }, "🌟"))
     }
@@ -439,9 +455,13 @@ fun VideoScreen(
             val mp3 = withContext(Dispatchers.IO) {
                 // Cache-Name enthält die Stimme, damit nach einem Sprachwechsel
                 // im KI-Profil keine alte Sprachversion abgespielt wird.
-                val f = File(context.cacheDir, "www_edge_s_" + discovery.id + "_" + page + "_" + rp + "_" + voice.hashCode() + ".mp3")
+                // Pausen-Faktor im Cache-Namen festhalten, damit nach einem
+                // Zielgruppen-Wechsel (z. B. Senioren) die neue Pausierung
+                // erzeugt und abgespielt wird.
+                val ps = EdgeTTS.pauseScaleFor(context)
+                val f = File(context.cacheDir, "www_edge_s_" + discovery.id + "_" + page + "_" + rp + "_" + voice.hashCode() + "_p" + (ps * 100).toInt() + ".mp3")
                 if (!f.exists() || f.length() < 200L) {
-                    EdgeTTS.synthesizeToMp3(slide.title + ". " + slide.text, voice, rp, f, ssml = true)
+                    EdgeTTS.synthesizeToMp3(slide.title + ". " + slide.text, voice, rp, f, ssml = true, pauseScale = ps)
                 }
                 f
             }
@@ -1241,12 +1261,13 @@ private fun exportAudioOnly(
         val vA = if (edgeA.isNotBlank()) edgeA else edgeB
         val vB = if (edgeB.isNotBlank()) edgeB else edgeA
         val rp = ratePercent(speed)
+        val ps = EdgeTTS.pauseScaleFor(context)
         val out = ByteArrayOutputStream()
         slides.forEachIndexed { i, s ->
             val voice = if (i % 2 == 1) vB else vA
-            val mp3 = File(context.cacheDir, "www_exps_" + discovery.id + "_" + i + "_" + rp + "_" + voice.hashCode() + ".mp3")
+            val mp3 = File(context.cacheDir, "www_exps_" + discovery.id + "_" + i + "_" + rp + "_" + voice.hashCode() + "_p" + (ps * 100).toInt() + ".mp3")
             if (!mp3.exists() || mp3.length() < 200L) {
-                EdgeTTS.synthesizeToMp3(s.title + ". " + s.text, voice, rp, mp3, ssml = true)
+                EdgeTTS.synthesizeToMp3(s.title + ". " + s.text, voice, rp, mp3, ssml = true, pauseScale = ps)
             }
             out.write(mp3.readBytes())
         }
@@ -1354,6 +1375,7 @@ private fun shareVideo(context: Context, uri: Uri, pkg: String?) {
         // Still ignorieren
     }
 }
+
 
 
 

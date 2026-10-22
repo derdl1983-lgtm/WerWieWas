@@ -145,6 +145,15 @@ object EdgeTTS {
             .trim()
 
     /**
+     * Sprechpausen-Faktor je nach Zielgruppe des KI-Profils: Das
+     * Senioren-Profil erhält deutlich mehr Atempause zwischen den Sätzen
+     * (SSML-Breaks 1,5-fach), alle anderen Zielgruppen die Standard-Pausen.
+     */
+    fun pauseScaleFor(context: Context): Float =
+        if (context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                .getString("ai_audience", "all") == "senior") 1.5f else 1f
+
+    /**
      * Löscht abgelegte Sprachdateien aus dem App-Cache, die älter als
      * 24 Stunden sind. Wird beim App-Start aufgerufen.
      */
@@ -488,7 +497,7 @@ object EdgeTTS {
      * korrigiert und mehrfach erneut versucht; zusätzlich läuft nach dem neuen Host
      * (api.msedgeservices.com) immer noch der alte Host als Fallback.
      */
-    fun synthesizeToMp3(text: String, voice: String, ratePercent: Int, outFile: File, ssml: Boolean = false): File {
+    fun synthesizeToMp3(text: String, voice: String, ratePercent: Int, outFile: File, ssml: Boolean = false, pauseScale: Float = 1f): File {
         var lastSkew: SkewException? = null
         var lastHard: IOException? = null
         // Erst der neue Host (api.msedgeservices.com), danach der alte:
@@ -498,7 +507,7 @@ object EdgeTTS {
             var skew = 0L
             for (attempt in 0 until 3) {
                 try {
-                    return synthesizeOnce(text, voice, ratePercent, outFile, skew, useLegacy, ssml)
+                    return synthesizeOnce(text, voice, ratePercent, outFile, skew, useLegacy, ssml, pauseScale)
                 } catch (e: SkewException) {
                     skew = e.skewSeconds
                     lastSkew = e
@@ -515,7 +524,7 @@ object EdgeTTS {
         )
     }
 
-    private fun synthesizeOnce(text: String, voice: String, ratePercent: Int, outFile: File, skewSeconds: Long, useLegacyHost: Boolean, ssml: Boolean): File {
+    private fun synthesizeOnce(text: String, voice: String, ratePercent: Int, outFile: File, skewSeconds: Long, useLegacyHost: Boolean, ssml: Boolean, pauseScale: Float = 1f): File {
         // Neuer Host: Token als Ocp-Apim-Subscription-Key (Referenz: rany2/edge-tts
         // PR #491, constants.py/communicate.py). Alter Host: TrustedClientToken.
         val secMsGec = secMsGecV2(skewSeconds)
@@ -569,9 +578,14 @@ object EdgeTTS {
                     // kurze Sprechpausen einfügen – klingt deutlich natürlicher
                     // und lässt den Erklärtext ruhiger und verständlicher wirken.
                     if (ssml) {
+                        // Sprechpausen je Zielgruppe skalieren (Senioren-Profil:
+                        // 1,5-fache Atempausen, siehe pauseScaleFor) – klingt
+                        // geduldiger und macht Sätze besser verständlich.
+                        val sentenceMs = (320 * pauseScale.coerceIn(1f, 2f)).toInt()
+                        val commaMs = (150 * pauseScale.coerceIn(1f, 2f)).toInt()
                         escaped = escaped
-                            .replace(Regex("([.!?…])(?=\\s|$)"), "$1<break time='320ms'/>")
-                            .replace(Regex("([,;:])(?=\\s|$)"), "$1<break time='150ms'/>")
+                            .replace(Regex("([.!?…])(?=\\s|$)"), "$1<break time='" + sentenceMs + "ms'/>")
+                            .replace(Regex("([,;:])(?=\\s|$)"), "$1<break time='" + commaMs + "ms'/>")
                     }
                     val rate = (if (ratePercent >= 0) "+" + ratePercent else ratePercent.toString()) + "%"
                     // Sprach-Tag der Stimme folgen (z. B. "en-US-AriaNeural" → "en-US"),
@@ -748,6 +762,7 @@ object EdgeTTS {
         }
     }
 }
+
 
 
 

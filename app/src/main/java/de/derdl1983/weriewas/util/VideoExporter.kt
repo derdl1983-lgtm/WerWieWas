@@ -226,6 +226,7 @@ object VideoExporter {
         val pcmOut = ByteArrayOutputStream()
         val speechRanges = mutableListOf<LongRange>()
         val sceneSpans = mutableListOf<LongRange>()
+        val warnSpans = mutableListOf<LongRange>()
         val sceneStart = LongArray(slides.size)
         val sceneDur = LongArray(slides.size)
         pcmOut.write(ByteArray((INTRO_SECONDS * TARGET_RATE * 2).toInt()))
@@ -239,6 +240,7 @@ object VideoExporter {
             sceneStart[i] = cursor
             sceneDur[i] = monoUs + padUs + fadeUs / 2
             sceneSpans.add(cursor until (cursor + sceneDur[i]))
+            if (slides[i].emoji.contains("⚠")) warnSpans.add(cursor until (cursor + sceneDur[i]))
             if (monoUs > 0) speechRanges.add(cursor until (cursor + monoUs))
             cursor += monoUs + padUs
             pcmOut.write(ByteArray((padUs * TARGET_RATE * 2L / 1_000_000L).toInt()))
@@ -253,7 +255,7 @@ object VideoExporter {
             audioCached.format to audioCached.samples
         } else {
             val stereoPcm = normalizeLoudness(
-                mixAudio(monoPcm, durationUs, speechRanges, backgroundMusic, musicMood)
+                mixAudio(monoPcm, durationUs, speechRanges, backgroundMusic, musicMood, warnSpans)
             )
             onProgress(0.32f)
             val enc = try {
@@ -592,25 +594,32 @@ object VideoExporter {
                     tts.setPitch(if (index % 2 == 1) 0.8f else 1f)
                 }
                 val wav = File(context.cacheDir, "www_slide_" + index + ".wav")
-                val latch = CountDownLatch(1)
-                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onDone(utteranceId: String?) { latch.countDown() }
-                    override fun onError(utteranceId: String?) { latch.countDown() }
-                    override fun onStart(utteranceId: String?) { }
-                })
-                val ok = tts.synthesizeToFile(
-                    EdgeTTS.speakableText(slide.title) + ". " + EdgeTTS.speakableText(slide.text),
-                    Bundle().apply {
-                        putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "exp" + index)
-                    },
-                    wav,
-                    "exp" + index
-                )
-                if (ok == TextToSpeech.SUCCESS) latch.await(60, TimeUnit.SECONDS) else Thread.sleep(1000)
-                val audio = runCatching { parseWav(wav) }
-                    .getOrElse { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
+                var audio = SlideAudio(ByteArray(0), TARGET_RATE, 1)
+                // Neuversuch: Die Synthese einer Szene kann einmal scheitern
+                // oder eine leere Datei liefern – dann ein zweites Mal
+                // probieren, statt die Szene stumm zu lassen.
+                for (attempt in 0 until 2) {
+                    val latch = CountDownLatch(1)
+                    tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onDone(utteranceId: String?) { latch.countDown() }
+                        override fun onError(utteranceId: String?) { latch.countDown() }
+                        override fun onStart(utteranceId: String?) { }
+                    })
+                    val ok = tts.synthesizeToFile(
+                        EdgeTTS.speakableText(slide.title) + ". " + EdgeTTS.speakableText(slide.text),
+                        Bundle().apply {
+                            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "exp" + index)
+                        },
+                        wav,
+                        "exp" + index
+                    )
+                    if (ok == TextToSpeech.SUCCESS) latch.await(60, TimeUnit.SECONDS) else Thread.sleep(1000)
+                    audio = runCatching { parseWav(wav) }
+                        .getOrElse { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
+                    wav.delete()
+                    if (audio.pcm.isNotEmpty()) break
+                }
                 result.add(audio)
-                wav.delete()
                 progress((index + 1f) / slides.size)
             }
             return result
@@ -620,13 +629,16 @@ object VideoExporter {
         }
     }
 
-    /** Mischt die Sprachausgabe (Mono) mit der Hintergrundmusik zu einer Stereospur. */
+    /** Mischt die Sprachausgabe (Mono) mit der Hintergrundmusik zu einer Stereospur.
+     *  In Sicherheits-Szenen (warnRanges) wird die Musik fast ganz abgesenkt,
+     *  damit die Warnung ernst und klar verständlich bleibt. */
     private fun mixAudio(
         monoPcm: ByteArray,
         durationUs: Long,
         speechRanges: List<LongRange>,
         wantMusic: Boolean,
-        mood: String
+        mood: String,
+        warnRanges: List<LongRange> = emptyList()
     ): ByteArray {
         val frames = monoPcm.size / 2
         if (frames == 0) return ByteArray(0)
@@ -638,6 +650,8 @@ object VideoExporter {
         val loop = if (wantMusic) buildPadLoop(mood) else null
         val loopFrames = if (loop != null) loop.size / 2 else 0
         val out = ByteArray(frames * 4)
+        // Sicherheits-Fenster in Sekunden für die Musik-Absenkung
+        val warnSec = warnRanges.map { Pair(it.first / 1_000_000.0, it.last / 1_000_000.0) }
         for (f in 0 until frames) {
             val s = (((monoPcm[f * 2].toInt() and 0xff) or ((monoPcm[f * 2 + 1].toInt() and 0xff) shl 8))).toShort()
             var l = s.toInt()
@@ -659,6 +673,9 @@ object VideoExporter {
                         else -> 0.32f
                     }
                 }
+                // Sicherheits-Szene: Musik fast ganz absenken – die Warnung
+                // soll ernst rüberkommen, nicht von der Melodie geschluckt.
+                if (warnSec.any { t >= it.first && t < it.second }) g *= 0.2f
                 val idx = (f % loopFrames) * 2
                 l += (loop[idx] * g * 32767f).toInt()
                 r += (loop[idx + 1] * g * 32767f).toInt()
@@ -836,7 +853,7 @@ object VideoExporter {
     /** Encodiert die Stereotonspur als AAC und liefert Format + Samples. */
     private fun encodeAudio(pcm: ByteArray, sampleRate: Int, channels: Int): Pair<MediaFormat, List<Sample>> {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels)
-        format.setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, 192000)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 32768)
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -1278,9 +1295,13 @@ object VideoExporter {
             }
             if (chunks.isEmpty()) continue
             val totalLen = chunks.sumOf { it.length }.coerceAtLeast(1)
+            // Wie bei den eingebrannten Untertiteln: echte Sprechpausen nach
+            // Satzende in das Cue-Timing einrechnen (siehe buildCaptions).
+            val pauseCount = chunks.count { endsSentence(it) }
+            val cueSpanUs = (spanUs - CUE_PAUSE_US * pauseCount).coerceAtLeast(1_000L)
             var t = range.first
             for (ch in chunks) {
-                val d = spanUs * ch.length / totalLen
+                val d = cueSpanUs * ch.length / totalLen + (if (endsSentence(ch)) CUE_PAUSE_US else 0L)
                 val start = t
                 val end = (t + d).coerceAtMost(range.last)
                 if (end > start) {
@@ -1311,6 +1332,9 @@ object VideoExporter {
 
     /** Speichert die SRT-Untertiteldatei in Downloads (ab Android 10) bzw. im App-Ordner. */
     private fun saveSrt(context: Context, videoBase: String, content: String): Uri? {
+        // UTF-8-BOM voranstellen: Ältere Player (z. B. unter Windows) zeigen
+        // ohne BOM deutsche Umlaute in Untertiteln als kaputte Zeichen an.
+        val bytes = ("\uFEFF" + content).toByteArray(Charsets.UTF_8)
         val fileName = videoBase + ".srt"
         if (Build.VERSION.SDK_INT >= 29) {
             val values = ContentValues().apply {
@@ -1320,14 +1344,14 @@ object VideoExporter {
             }
             val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: return null
-            context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+            context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
             return uri
         }
         return runCatching {
             val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir, "videos")
             dir.mkdirs()
             val target = File(dir, fileName)
-            target.writeText(content)
+            target.writeBytes(bytes)
             FileProvider.getUriForFile(context, context.packageName + ".fileprovider", target)
         }.getOrNull()
     }
@@ -1490,6 +1514,15 @@ object VideoExporter {
      * Sekunde plus 2,5 s Anlauf): Der komplette Text bleibt solange sichtbar,
      * selbst wenn die Sprachausgabe fehlt oder kürzer ist.
      */
+    /** Sprechpause nach Satzende (SSML-Break bzw. Satzpausen der
+     *  System-Synthese), die beim Untertitel-Timing berücksichtigt wird. */
+    private const val CUE_PAUSE_US = 300_000L
+
+    /** True, wenn ein Untertitel-/SRT-Cue auf ein Satzzeichen endet –
+     *  danach pausiert die Stimme, bevor der nächste Cue gesprochen wird. */
+    private fun endsSentence(text: String): Boolean =
+        text.isNotEmpty() && text.last() in ".!?…"
+
     private fun minSceneUs(text: String): Long {
         val len = text.length.coerceAtMost(400)
         return (2_500_000L + len * 70_000L).coerceIn(3_000_000L, 25_000_000L)
@@ -1517,6 +1550,13 @@ object VideoExporter {
         }
         if (chunks.isEmpty()) return emptyList()
         val totalLen = chunks.sumOf { it.length }.coerceAtLeast(1)
+        // Echte Sprechpausen einrechnen: Nach Satzenden pausiert die Stimme
+        // (SSML-Breaks bzw. Satzpausen der System-Synthese). Der Satz-Cue
+        // bleibt dafür entsprechend länger stehen und der nächste Cue
+        // startet erst, wenn wirklich weitergesprochen wird – so treffen
+        // die Untertitel den Redemoment, statt zu früh umzuschalten.
+        val pauseCount = chunks.count { endsSentence(it) }
+        val cueSpeechUs = (speechDurUs - CUE_PAUSE_US * pauseCount).coerceAtLeast(1_000L)
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG)
         paint.textSize = 34f * scale
         paint.isFakeBoldText = true
@@ -1528,7 +1568,7 @@ object VideoExporter {
         var t = 0L
         val out = mutableListOf<Caption>()
         for (ch in chunks) {
-            val d = speechDurUs * ch.length / totalLen
+            val d = cueSpeechUs * ch.length / totalLen + (if (endsSentence(ch)) CUE_PAUSE_US else 0L)
             val layout = StaticLayout.Builder.obtain(ch, 0, ch.length, paint, maxW)
                 .setAlignment(Layout.Alignment.ALIGN_CENTER)
                 .setLineSpacing(0f, 1.15f)
@@ -1667,7 +1707,12 @@ object VideoExporter {
         h = h * 31 + java.lang.Float.floatToIntBits(rate)
         h = h * 31 + (voiceA ?: "").hashCode()
         h = h * 31 + (voiceB ?: "").hashCode()
-        h = h * 31 + if (preAudio != null) 1 else 0
+        // Pre-Audio-Dateien namentlich in den Schlüssel aufnehmen: Ihre Namen
+        // enthalten Stimme, Tempo und Pausen-Faktor – so wird der Tonspur-Cache
+        // nach einem Zielgruppen- oder Stimmwechsel sicher verworfen.
+        for (p in (preAudio ?: emptyList())) {
+            h = h * 31 + (p?.name?.hashCode() ?: 0)
+        }
         h = h * 31 + if (burnedSubs) 1 else 0
         h = h * 31 + if (music) 1 else 0
         h = h * 31 + mood.hashCode()
@@ -1750,7 +1795,7 @@ object VideoExporter {
                     }
                 } else {
                     MediaFormat.createAudioFormat(mime, sampleRate, channels).apply {
-                        setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+                        setInteger(MediaFormat.KEY_BIT_RATE, 192000)
                         setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 32768)
                     }
                 }
@@ -2013,4 +2058,5 @@ object VideoExporter {
         canvas.restore()
     }
 }
+
 

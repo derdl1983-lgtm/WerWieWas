@@ -239,10 +239,13 @@ class ExportService : Service() {
                 val vA = if (edgeA.isNotBlank()) edgeA else edgeB
                 val vB = if (edgeB.isNotBlank()) edgeB else edgeA
                 val rp = ((speed - 1f) * 100f).toInt().coerceIn(-50, 100)
+                // Pausen-Faktor des KI-Profils (Senioren: mehr Atempause) –
+                // im Cache-Namen festhalten, damit keine alte Fassung läuft.
+                val ps = EdgeTTS.pauseScaleFor(appContext)
                 slides.mapIndexed { i, s ->
                     try {
                         val voice = if (i % 2 == 1) vB else vA
-                        val tag = voice.hashCode()
+                        val tag = voice.hashCode().toString() + "_p" + (ps * 100).toInt()
                         val mp3 = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_" + tag + ".mp3")
                         val wav = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_" + tag + ".wav")
                         if (!mp3.exists() || mp3.length() < 200L) {
@@ -251,7 +254,8 @@ class ExportService : Service() {
                                 voice,
                                 rp,
                                 mp3,
-                                ssml = true
+                                ssml = true,
+                                pauseScale = ps
                             )
                         }
                         if (!wav.exists() || wav.lastModified() < mp3.lastModified()) {
@@ -336,3 +340,4 @@ class ExportService : Service() {
         }
     }
 }
+
