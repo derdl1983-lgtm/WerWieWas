@@ -192,6 +192,8 @@ fun VideoScreen(
         mutableStateOf(prefs.getString("video_format", "portrait") ?: "portrait")
     }
     var wantSrt by rememberSaveable { mutableStateOf(prefs.getBoolean("video_srt", true)) }
+    var burnedSubs by rememberSaveable { mutableStateOf(prefs.getBoolean("video_burn_subs", false)) }
+    var wantMusic by rememberSaveable { mutableStateOf(prefs.getBoolean("video_music", true)) }
     val formatLabels = listOf(
         "portrait" to "Hochformat",
         "landscape720" to "Quer 720p",
@@ -661,13 +663,41 @@ fun VideoScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Switch(
+                    checked = wantMusic,
+                    onCheckedChange = {
+                        wantMusic = it
+                        prefs.edit().putBoolean("video_music", it).apply()
+                    }
+                )
+                Text("Hintergrundmusik (dezent, automatisch leiser unter der Stimme)", style = MaterialTheme.typography.bodyMedium)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Switch(
+                    checked = burnedSubs,
+                    onCheckedChange = {
+                        burnedSubs = it
+                        prefs.edit().putBoolean("video_burn_subs", it).apply()
+                    }
+                )
+                Text("Untertitel ins Video einbrennen (TikTok-Stil)", style = MaterialTheme.typography.bodyMedium)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Switch(
                     checked = wantSrt,
                     onCheckedChange = {
                         wantSrt = it
                         prefs.edit().putBoolean("video_srt", it).apply()
                     }
                 )
-                Text("Untertitel (SRT) mitspeichern", style = MaterialTheme.typography.bodyMedium)
+                Text("Untertitel zusätzlich als SRT-Datei speichern", style = MaterialTheme.typography.bodyMedium)
             }
             Spacer(Modifier.height(20.dp))
 
@@ -746,7 +776,9 @@ fun VideoScreen(
                                         audioFiles,
                                         videoSize.first,
                                         videoSize.second,
-                                        wantSrt
+                                        wantSrt,
+                                        burnedSubs,
+                                        wantMusic
                                     ) { d, t -> exportProgress = "Schritt " + d + " von " + t }
                                 } catch (e: Exception) {
                                     de.derdl1983.weriewas.WerWieWasApp.logExportError(context, e)

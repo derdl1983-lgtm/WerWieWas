@@ -9,6 +9,8 @@ import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.media.Image
@@ -34,12 +36,16 @@ import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
 /**
  * Exportiert das Erklärvideo als abspielbare MP4-Datei:
- * Szenen werden als H.264-Videospur encodiert, die Sprachausgabe als AAC-Tonspur,
- * beides über MediaMuxer in eine Datei gemuxt und in die Mediathek gespeichert.
- * Blockierend mit viel I/O – nur ausserhalb des Main-Threads aufrufen.
+ * Szenen werden mit weichen Überblendungen, sanftem Bild-Zoom (Ken Burns),
+ * Intro- und Abschluss-Karte und Fortschrittsbalken als H.264-Videospur
+ * encodiert (24 Bilder/s), die Sprachausgabe plus dezente Hintergrundmusik
+ * als AAC-Stereotonspur, beides über MediaMuxer in eine Datei gemuxt und in
+ * die Mediathek gespeichert. Blockierend mit viel I/O und Rechenarbeit – nur
+ * ausserhalb des Main-Threads aufrufen.
  */
 object VideoExporter {
 
@@ -56,14 +62,53 @@ object VideoExporter {
     private class SlideAudio(val pcm: ByteArray, val sampleRate: Int, val channels: Int)
     private class Sample(val data: ByteArray, val ptsUs: Long, val flags: Int)
 
+    /** Vorbereitete Grafik-Ebenen einer Szene für den Frame-Renderer. */
+    private class SlideGfx(
+        val base: Bitmap,
+        val photo: Bitmap?,
+        val photoRect: RectF?,
+        val textLayer: Bitmap?,
+        val textTop: Float,
+        val textH: Int,
+        val captions: List<Caption>
+    )
+
+    /** Eine eingebrannte Untertitel-Zeile mit Zeitfenster und fertigem Layout. */
+    private class Caption(
+        val startUs: Long,
+        val endUs: Long,
+        val text: String,
+        val layout: StaticLayout,
+        val boxW: Float,
+        val boxH: Float
+    )
+
     class ExportException(message: String) : Exception(message)
 
     private var WIDTH = 720
     private var HEIGHT = 1280
     private var scale = 1f
-    private const val FRAME_INTERVAL_US = 250000L
-    private const val TARGET_RATE = 22050
+    private const val FRAME_INTERVAL_US = 41666L // 24 Bilder/s für weiche Überblendungen
+    private const val TARGET_RATE = 44100       // Studio-Audioqualität
+    private const val CHANNELS = 2              // Stereo
     private const val SILENCE_SECONDS = 0.6
+    private const val FADE_SECONDS = 0.6        // Dauer der Szenen-Überblendung
+    private const val INTRO_SECONDS = 2.8
+    private const val OUTRO_SECONDS = 2.2
+    private const val TEXT_FADE_SECONDS = 0.5   // Titel/Text blenden pro Szene ein
+    private const val ZOOM_AMOUNT = 0.08f      // Ken-Burns-Zoomstärke auf Fotos
+
+    /** Durchgehende Marken-Palette: Navy-Blau-Verläufe, dezent variiert pro Szene. */
+    private val palettes = arrayOf(
+        intArrayOf(0xFF0A1F4E.toInt(), 0xFF1A50A8.toInt()),
+        intArrayOf(0xFF0B2A5B.toInt(), 0xFF1565C0.toInt()),
+        intArrayOf(0xFF091E45.toInt(), 0xFF283593.toInt()),
+        intArrayOf(0xFF0D2B52.toInt(), 0xFF0F6BA8.toInt()),
+        intArrayOf(0xFF101F4C.toInt(), 0xFF2547A8.toInt()),
+        intArrayOf(0xFF0A2450.toInt(), 0xFF1E6FA8.toInt()),
+        intArrayOf(0xFF0C1E4E.toInt(), 0xFF2C5FB4.toInt()),
+        intArrayOf(0xFF0E2A54.toInt(), 0xFF1A5FA8.toInt())
+    )
 
     /**
      * Ergebnis eines Video-Exports: Beschreibung des Speicherorts und (wo möglich)
@@ -78,7 +123,9 @@ object VideoExporter {
      * preAudio: optional je Szene eine fertige WAV-Datei (z. B. Edge-TTS);
      * fehlende Einträge werden über die Android-Sprachausgabe erzeugt.
      * videoWidth/videoHeight: Auflösung (z. B. 1280x720/1920x1080 für YouTube-Querformat);
-     * wantSrt: Untertitel als SRT-Datei mitspeichern.
+     * wantSrt: Untertitel als SRT-Datei mitspeichern;
+     * burnedSubs: Untertitel direkt ins Video einbrennen (TikTok-Stil);
+     * backgroundMusic: dezente, generierte Hintergrundmusik unter die Stimme mischen.
      */
     fun export(
         context: Context,
@@ -90,65 +137,290 @@ object VideoExporter {
         videoWidth: Int = 720,
         videoHeight: Int = 1280,
         wantSrt: Boolean = false,
+        burnedSubs: Boolean = false,
+        backgroundMusic: Boolean = true,
         onProgress: (done: Int, total: Int) -> Unit
     ): ExportResult {
         if (slides.isEmpty()) throw ExportException("Keine Inhalte zum Export vorhanden.")
         WIDTH = videoWidth
         HEIGHT = videoHeight
         scale = minOf(WIDTH, HEIGHT) / 720f
-        val totalSteps = 3 + slides.size
-        var done = 0
+        val totalSteps = slides.size + 5
+        val introUs = (INTRO_SECONDS * 1_000_000).toLong()
+        val outroUs = (OUTRO_SECONDS * 1_000_000).toLong()
+        val fadeUs = (FADE_SECONDS * 1_000_000).toLong()
+        val silenceUs = (SILENCE_SECONDS * 1_000_000).toLong()
 
         val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, preAudio)
-        done += slides.size
-        onProgress(done, totalSteps)
+        onProgress(slides.size, totalSteps)
 
+        // Ton-Zeitlinie: Intro-Pause, dann je Szene Sprachausgabe + Sprechpause, dann Outro-Pause
         val silence = ByteArray((SILENCE_SECONDS * TARGET_RATE * 2).toInt())
         val pcmOut = ByteArrayOutputStream()
-        val ranges = mutableListOf<LongRange>()
-        var start = 0L
+        val speechRanges = mutableListOf<LongRange>()
+        pcmOut.write(ByteArray((INTRO_SECONDS * TARGET_RATE * 2).toInt()))
+        var start = introUs
         for (a in audios) {
             val mono = toMonoTarget(a)
+            val monoUs = mono.size * 1_000_000L / (TARGET_RATE * 2)
             pcmOut.write(mono)
+            if (monoUs > 0) speechRanges.add(start until (start + monoUs))
+            start += monoUs
             pcmOut.write(silence)
-            val end = start + (mono.size + silence.size) * 1000000L / (TARGET_RATE * 2)
-            ranges.add(start until end)
-            start = end
+            start += silenceUs
         }
-        val durationUs = start
-        val pcm = pcmOut.toByteArray()
-        done++
-        onProgress(done, totalSteps)
+        pcmOut.write(ByteArray((OUTRO_SECONDS * TARGET_RATE * 2).toInt()))
+        val durationUs = start + outroUs
+        val monoPcm = pcmOut.toByteArray()
 
-        val pixels = slides.mapIndexed { i, s ->
-            val bmp = renderSlide(s, i)
-            val px = IntArray(WIDTH * HEIGHT)
-            bmp.getPixels(px, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
-            bmp.recycle()
-            px
+        // Anzeige-Fenster der Szenen: Sprache plus Sprechpause plus halbe Überblendung
+        val sceneStart = LongArray(slides.size)
+        val sceneDur = LongArray(slides.size)
+        for (i in slides.indices) {
+            val r = speechRanges.getOrNull(i)
+            val speechUs = if (r != null) (r.last - r.first) else 0L
+            sceneStart[i] = if (r != null) r.first else (start - outroUs - silenceUs)
+            sceneDur[i] = speechUs + silenceUs + fadeUs / 2
         }
-        done++
-        onProgress(done, totalSteps)
 
-        fun pixelsAt(t: Long): IntArray {
-            for (i in ranges.indices) if (ranges[i].contains(t)) return pixels[i]
-            return pixels.last()
-        }
+        // Hintergrundmusik + Sprachausgabe zu einer Stereospur mischen
+        val stereoPcm = mixAudio(monoPcm, durationUs, speechRanges, backgroundMusic)
+        onProgress(slides.size + 1, totalSteps)
 
         val audio = try {
-            encodeAudio(pcm, TARGET_RATE)
+            encodeAudio(stereoPcm, TARGET_RATE, CHANNELS)
         } catch (e: ExportException) {
             throw e
         } catch (e: Exception) {
             throw ExportException("Tonspur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
         }
+        onProgress(slides.size + 2, totalSteps)
+
+        // Szenen-Grafiken vorbereiten (Ebenen für Zoom, Text-Fade, Untertitel)
+        val gfx = try {
+            slides.mapIndexed { i, s ->
+                val r = speechRanges.getOrNull(i)
+                renderSlideGfx(s, i, slides.size, burnedSubs, if (r != null) (r.last - r.first) else 0L)
+            }
+        } catch (e: ExportException) {
+            throw e
+        } catch (e: Exception) {
+            throw ExportException("Szenen konnten nicht vorbereitet werden: " + (e.message ?: e.javaClass.simpleName))
+        }
+        onProgress(slides.size + 3, totalSteps)
+
+        // Frame-Renderer: Intro-Karte, Überblendungen, Ken-Burns-Zoom, Outro-Karte
+        val bmpA = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
+        val cA = Canvas(bmpA)
+        val bmpB = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
+        val cB = Canvas(bmpB)
+        val arrA = IntArray(WIDTH * HEIGHT)
+        val arrB = IntArray(WIDTH * HEIGHT)
+        val out = IntArray(WIDTH * HEIGHT)
+
+        val topicText = slides.firstOrNull()?.text?.trim()?.take(90)
+            ?.takeUnless { it.isNullOrBlank() } ?: "Dein Erklärvideo"
+        val topicPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        topicPaint.textSize = 44f * scale
+        topicPaint.color = Color.argb(240, 255, 255, 255)
+        topicPaint.setShadowLayer(3f * scale, 0f, 2f * scale, Color.argb(120, 0, 0, 0))
+        val topicLayout = StaticLayout.Builder.obtain(
+            topicText, 0, topicText.length, topicPaint, (WIDTH - 160f * scale).toInt()
+        ).setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(0f, 1.2f).build()
+
+        fun drawProgress(c: Canvas, t: Long) {
+            val track = Paint(Paint.ANTI_ALIAS_FLAG)
+            track.color = Color.argb(40, 255, 255, 255)
+            c.drawRect(0f, HEIGHT - 5f * scale, WIDTH.toFloat(), HEIGHT.toFloat(), track)
+            val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+            fill.color = Color.rgb(66, 133, 244)
+            val w = WIDTH * (t.toFloat() / durationUs.toFloat()).coerceIn(0f, 1f)
+            c.drawRect(0f, HEIGHT - 5f * scale, w, HEIGHT.toFloat(), fill)
+        }
+
+        fun drawCaption(c: Canvas, i: Int, t: Long) {
+            val tIn = t - sceneStart[i]
+            val cap = gfx[i].captions.firstOrNull { tIn >= it.startUs && tIn < it.endUs } ?: return
+            val left = (WIDTH - cap.boxW) / 2f
+            val top = HEIGHT - 120f * scale - cap.boxH
+            val box = RectF(left, top, left + cap.boxW, top + cap.boxH)
+            val bgp = Paint(Paint.ANTI_ALIAS_FLAG)
+            bgp.color = Color.argb(200, 10, 14, 30)
+            c.drawRoundRect(box, 14f * scale, 14f * scale, bgp)
+            c.save()
+            c.translate((WIDTH - cap.layout.width) / 2f, box.top + 14f * scale)
+            cap.layout.draw(c)
+            c.restore()
+        }
+
+        fun drawScene(c: Canvas, i: Int, t: Long) {
+            val g = gfx[i]
+            c.drawBitmap(g.base, 0f, 0f, null)
+            val p = g.photo
+            val r = g.photoRect
+            if (p != null && r != null) {
+                // Ken-Burns-Zoom: Foto wird im Lauf der Szene leicht herangeführt
+                val prog = ((t - sceneStart[i]).toFloat() / sceneDur[i].toFloat()).coerceIn(0f, 1f)
+                val z = 1f + ZOOM_AMOUNT * prog
+                val clip = Path()
+                clip.addRoundRect(r, 18f * scale, 18f * scale, Path.Direction.CW)
+                c.save()
+                c.clipPath(clip)
+                val m = Matrix()
+                m.postTranslate(-p.width / 2f, -p.height / 2f)
+                m.postScale(z, z)
+                m.postTranslate(r.centerX(), r.centerY())
+                c.drawBitmap(p, m, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+                c.restore()
+            }
+            val tl = g.textLayer
+            if (tl != null && g.textH > 0) {
+                // Titel/Text fahren sanft ein und blenden ein
+                val a = ((t - sceneStart[i]).toFloat() / (TEXT_FADE_SECONDS * 1_000_000f)).coerceIn(0f, 1f)
+                val ease = a * a * (3f - 2f * a)
+                val pa = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+                pa.alpha = (ease * 255).toInt()
+                val dy = (1f - ease) * 26f * scale
+                val src = Rect(0, 0, WIDTH, g.textH)
+                c.drawBitmap(tl, src, RectF(0f, g.textTop + dy, WIDTH.toFloat(), g.textTop + dy + g.textH), pa)
+            }
+            if (burnedSubs) drawCaption(c, i, t)
+            drawProgress(c, t)
+        }
+
+        fun drawWordmark(c: Canvas, y: Float, size: Float, alpha: Int) {
+            val a = alpha.coerceIn(0, 255)
+            val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            tp.textSize = size
+            tp.isFakeBoldText = true
+            tp.setShadowLayer(5f * scale, 0f, 2f * scale, Color.argb(140, 0, 0, 0))
+            val s1 = "Wer "
+            val s2 = "Wie"
+            val s3 = " Was"
+            val total = tp.measureText(s1) + tp.measureText(s2) + tp.measureText(s3)
+            var x = WIDTH / 2f - total / 2f
+            tp.color = Color.argb(a, 255, 255, 255)
+            c.drawText(s1, x, y, tp)
+            x += tp.measureText(s1)
+            tp.color = Color.argb(a, 66, 133, 244)
+            c.drawText(s2, x, y, tp)
+            x += tp.measureText(s2)
+            tp.color = Color.argb(a, 255, 255, 255)
+            c.drawText(s3, x, y, tp)
+        }
+
+        fun drawCard(c: Canvas, t: Long, cardStart: Long, intro: Boolean) {
+            val bg = Paint()
+            bg.shader = LinearGradient(
+                0f, 0f, 0f, HEIGHT.toFloat(),
+                0xFF0A1633.toInt(), 0xFF1A50A8.toInt(), Shader.TileMode.CLAMP
+            )
+            c.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bg)
+            val a = ((t - cardStart).toFloat() / 900_000f).coerceIn(0f, 1f)
+            val ease = a * a * (3f - 2f * a)
+            val cy = HEIGHT * (if (intro) 0.34f else 0.38f)
+            val grow = 0.92f + 0.08f * ease
+            c.save()
+            c.scale(grow, grow, WIDTH / 2f, cy)
+            drawBigLogo(c, WIDTH / 2f, cy, 120f * scale, (ease * 255).toInt())
+            c.restore()
+            drawWordmark(c, cy + 210f * scale, 78f * scale, (ease * 255).toInt())
+            if (intro) {
+                c.save()
+                c.translate((WIDTH - topicLayout.width) / 2f, cy + 300f * scale)
+                topicLayout.draw(c)
+                c.restore()
+            } else {
+                val p2 = Paint(Paint.ANTI_ALIAS_FLAG)
+                p2.textAlign = Paint.Align.CENTER
+                p2.textSize = 36f * scale
+                p2.color = Color.argb(225, 255, 255, 255)
+                c.drawText("Einfach ein Foto machen –", WIDTH / 2f, cy + 300f * scale, p2)
+                c.drawText("die App erklärt den Rest!", WIDTH / 2f, cy + 350f * scale, p2)
+            }
+            drawProgress(c, t)
+        }
+
+        fun blend(a: IntArray, b: IntArray, f: Float, dst: IntArray) {
+            val ia = (f.coerceIn(0f, 1f) * 256f).toInt()
+            val ib = 256 - ia
+            for (i in dst.indices) {
+                val ca = a[i]
+                val cb = b[i]
+                val rr = ((ca ushr 16 and 0xff) * ib + (cb ushr 16 and 0xff) * ia) shr 8
+                val gg = ((ca ushr 8 and 0xff) * ib + (cb ushr 8 and 0xff) * ia) shr 8
+                val bb = ((ca and 0xff) * ib + (cb and 0xff) * ia) shr 8
+                dst[i] = (0xff shl 24) or (rr shl 16) or (gg shl 8) or bb
+            }
+        }
+
+        fun fadeToBlack(arr: IntArray, f: Float) {
+            val ib = 256 - (f.coerceIn(0f, 1f) * 256f).toInt()
+            for (i in arr.indices) {
+                val cc = arr[i]
+                val rr = ((cc ushr 16 and 0xff) * ib) shr 8
+                val gg = ((cc ushr 8 and 0xff) * ib) shr 8
+                val bb = ((cc and 0xff) * ib) shr 8
+                arr[i] = (0xff shl 24) or (rr shl 16) or (gg shl 8) or bb
+            }
+        }
+
+        fun renderFrame(t: Long): IntArray {
+            val half = fadeUs / 2
+            val outroStart = durationUs - outroUs
+            if (t < introUs - half) {
+                drawCard(cA, t, 0L, true)
+                bmpA.getPixels(out, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                return out
+            }
+            if (t < introUs + half) {
+                drawCard(cA, t, 0L, true)
+                bmpA.getPixels(arrA, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                drawScene(cB, 0, t)
+                bmpB.getPixels(arrB, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                blend(arrA, arrB, (t - (introUs - half)).toFloat() / fadeUs.toFloat(), out)
+                return out
+            }
+            if (t >= outroStart - half) {
+                if (t < outroStart + half) {
+                    drawScene(cA, slides.size - 1, t)
+                    bmpA.getPixels(arrA, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                    drawCard(cB, t, outroStart, false)
+                    bmpB.getPixels(arrB, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                    blend(arrA, arrB, (t - (outroStart - half)).toFloat() / fadeUs.toFloat(), out)
+                } else {
+                    drawCard(cA, t, outroStart, false)
+                    bmpA.getPixels(out, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                    val remain = durationUs - t
+                    if (remain in 1..500_000L) fadeToBlack(out, 1f - remain / 500_000f)
+                }
+                return out
+            }
+            var seg = 0
+            for (i in sceneStart.indices) if (t >= sceneStart[i]) seg = i
+            val nextB = if (seg + 1 < slides.size) sceneStart[seg + 1] else Long.MAX_VALUE
+            if (t >= nextB - half) {
+                drawScene(cA, seg, t)
+                bmpA.getPixels(arrA, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                drawScene(cB, seg + 1, t)
+                bmpB.getPixels(arrB, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                blend(arrA, arrB, (t - (nextB - half)).toFloat() / fadeUs.toFloat(), out)
+                return out
+            }
+            drawScene(cA, seg, t)
+            bmpA.getPixels(out, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+            return out
+        }
+
         val video = try {
-            encodeVideo(durationUs) { pixelsAt(it) }
+            encodeVideo(durationUs) { t -> renderFrame(t) }
         } catch (e: ExportException) {
             throw e
         } catch (e: Exception) {
             throw ExportException("Videospur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
         }
+        onProgress(slides.size + 4, totalSteps)
+
         val file = try {
             mux(context, audio, video)
         } catch (e: ExportException) {
@@ -156,13 +428,10 @@ object VideoExporter {
         } catch (e: Exception) {
             throw ExportException("Video-Datei konnte nicht erstellt werden: " + (e.message ?: e.javaClass.simpleName))
         }
-        done++
-        onProgress(done, totalSteps)
         val videoBase = file.name.removeSuffix(".mp4")
         val videoResult = saveVideo(context, file)
-        val srtUri = if (wantSrt) saveSrt(context, videoBase, buildSrt(slides, ranges)) else null
-        done++
-        onProgress(done, totalSteps)
+        val srtUri = if (wantSrt) saveSrt(context, videoBase, buildSrt(slides, speechRanges)) else null
+        onProgress(totalSteps, totalSteps)
         val message = if (srtUri != null) {
             videoResult.message + " – Untertitel (SRT) gespeichert"
         } else {
@@ -247,6 +516,105 @@ object VideoExporter {
         }
     }
 
+    /** Mischt die Sprachausgabe (Mono) mit der Hintergrundmusik zu einer Stereospur. */
+    private fun mixAudio(
+        monoPcm: ByteArray,
+        durationUs: Long,
+        speechRanges: List<LongRange>,
+        wantMusic: Boolean
+    ): ByteArray {
+        val frames = monoPcm.size / 2
+        if (frames == 0) return ByteArray(0)
+        val totalSec = durationUs / 1_000_000.0
+        val firstSpeech = speechRanges.firstOrNull()
+        val lastSpeech = speechRanges.lastOrNull()
+        val speechStartSec = if (firstSpeech != null) firstSpeech.first / 1_000_000.0 else totalSec
+        val speechEndSec = if (lastSpeech != null) lastSpeech.last / 1_000_000.0 else 0.0
+        val loop = if (wantMusic) buildPadLoop() else null
+        val loopFrames = if (loop != null) loop.size / 2 else 0
+        val out = ByteArray(frames * 4)
+        for (f in 0 until frames) {
+            val s = (((monoPcm[f * 2].toInt() and 0xff) or ((monoPcm[f * 2 + 1].toInt() and 0xff) shl 8))).toShort()
+            var l = s.toInt()
+            var r = s.toInt()
+            if (loop != null && loopFrames > 0) {
+                val t = f / TARGET_RATE.toDouble()
+                var g = 0.5f
+                if (t < 1.5) g *= (t / 1.5).toFloat()
+                val remain = totalSec - t
+                if (remain < 2.0) g *= (remain / 2.0).coerceAtLeast(0.0).toFloat()
+                // Ducking: Musik wird unter der Sprachausgabe automatisch leiser
+                val ds = speechStartSec - 0.4
+                val de = speechEndSec + 0.4
+                if (t > ds && t < de) {
+                    g *= when {
+                        t < ds + 0.6 -> 1f - 0.68f * ((t - ds) / 0.6).toFloat()
+                        t > de - 0.6 -> 1f - 0.68f * ((de - t) / 0.6).toFloat()
+                        else -> 0.32f
+                    }
+                }
+                val idx = (f % loopFrames) * 2
+                l += (loop[idx] * g * 32767f).toInt()
+                r += (loop[idx + 1] * g * 32767f).toInt()
+            }
+            l = l.coerceIn(-32767, 32767)
+            r = r.coerceIn(-32767, 32767)
+            out[f * 4] = (l and 0xff).toByte()
+            out[f * 4 + 1] = ((l shr 8) and 0xff).toByte()
+            out[f * 4 + 2] = (r and 0xff).toByte()
+            out[f * 4 + 3] = ((r shr 8) and 0xff).toByte()
+        }
+        return out
+    }
+
+    /**
+     * Baut einen 16-Sekunden-Ambient-Pad-Loop (A – E – F#m – D), der als dezente
+     * Hintergrundmusik unter der Sprachausgabe läuft. Vollständig im Code erzeugt,
+     * daher lizenzfrei und ohne Zusatzdateien.
+     */
+    private fun buildPadLoop(): FloatArray {
+        val totalSec = 16.0
+        val chordLen = 4.0
+        val overlap = 1.0
+        val n = (totalSec * TARGET_RATE).toInt()
+        val out = FloatArray(n * 2)
+        val chords = arrayOf(
+            doubleArrayOf(110.0, 164.81, 220.0, 277.18, 329.63),
+            doubleArrayOf(123.47, 164.81, 207.65, 246.94, 329.63),
+            doubleArrayOf(92.5, 138.59, 185.0, 220.0, 277.18),
+            doubleArrayOf(146.83, 220.0, 293.66, 369.99, 440.0)
+        )
+        for (c in chords.indices) {
+            val startS = c * chordLen
+            val dur = if (c == chords.size - 1) chordLen else chordLen + overlap
+            val s0 = (startS * TARGET_RATE).toInt()
+            val s1 = minOf(((startS + dur) * TARGET_RATE).toInt(), n)
+            val tones = chords[c]
+            for (i in s0 until s1) {
+                val t = (i - s0).toDouble() / TARGET_RATE
+                var env = minOf(t / 1.0, (dur - t) / 1.0, 1.0).coerceAtLeast(0.0)
+                env = env * env
+                var lv = 0.0
+                var rv = 0.0
+                for (k in tones.indices) {
+                    val w = 2.0 * Math.PI * tones[k]
+                    lv += Math.sin(w * t) * 0.55 + Math.sin(w * 2.0 * t) * 0.18 + Math.sin(w * 3.0 * t) * 0.06
+                    rv += Math.sin(w * 1.003 * t) * 0.55 + Math.sin(w * 2.006 * t) * 0.18 + Math.sin(w * 3.009 * t) * 0.06
+                }
+                val amp = env * 0.30 / tones.size
+                out[i * 2] += (lv * amp).toFloat()
+                out[i * 2 + 1] += (rv * amp).toFloat()
+            }
+        }
+        var peak = 0f
+        for (v in out) if (abs(v) > peak) peak = abs(v)
+        if (peak > 0.5f) {
+            val norm = 0.5f / peak
+            for (i in out.indices) out[i] *= norm
+        }
+        return out
+    }
+
     /** Liest eine WAV-Datei (16-Bit-PCM) und extrahiert die Rohdaten. */
     private fun parseWav(file: File): SlideAudio {
         val bytes = file.readBytes()
@@ -319,10 +687,10 @@ object VideoExporter {
     private fun readShortLE(b: ByteArray, o: Int): Short =
         (((b[o].toInt() and 0xff) or ((b[o + 1].toInt() and 0xff) shl 8))).toShort()
 
-    /** Encodiert die Tonspur als AAC und liefert Format + Samples. */
-    private fun encodeAudio(pcm: ByteArray, sampleRate: Int): Pair<MediaFormat, List<Sample>> {
-        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1)
-        format.setInteger(MediaFormat.KEY_BIT_RATE, 64000)
+    /** Encodiert die Stereotonspur als AAC und liefert Format + Samples. */
+    private fun encodeAudio(pcm: ByteArray, sampleRate: Int, channels: Int): Pair<MediaFormat, List<Sample>> {
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, 128000)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 32768)
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -337,7 +705,7 @@ object VideoExporter {
                     val idx = codec.dequeueInputBuffer(10000)
                     if (idx >= 0) {
                         if (offset >= pcm.size) {
-                            val finalPts = pcm.size * 1000000L / (sampleRate * 2)
+                            val finalPts = pcm.size * 1000000L / (sampleRate * 2 * channels)
                             codec.queueInputBuffer(idx, 0, 0, finalPts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
@@ -346,7 +714,7 @@ object VideoExporter {
                                 buf.clear()
                                 val n = minOf(buf.remaining(), pcm.size - offset)
                                 buf.put(pcm, offset, n)
-                                codec.queueInputBuffer(idx, 0, n, offset * 1000000L / (sampleRate * 2), 0)
+                                codec.queueInputBuffer(idx, 0, n, offset * 1000000L / (sampleRate * 2 * channels), 0)
                                 offset += n
                             } else {
                                 inputDone = true
@@ -376,12 +744,12 @@ object VideoExporter {
         return Pair(outFormat ?: format, samples)
     }
 
-    /** Encodiert die Standbilder als H.264-Videospur. */
+    /** Encodiert die animierten Videoframes als H.264-Videospur (24 Bilder/s). */
     private fun encodeVideo(durationUs: Long, pixelsAt: (Long) -> IntArray): Pair<MediaFormat, List<Sample>> {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, WIDTH, HEIGHT)
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-        format.setInteger(MediaFormat.KEY_BIT_RATE, WIDTH * HEIGHT * 6)
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, 4)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, WIDTH * HEIGHT * 3)
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, 24)
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -413,7 +781,7 @@ object VideoExporter {
                             if (image != null) {
                                 fillYuv420(image, pixelsAt(t))
                             } else {
-                                // Fallback: Manche Geräte liefern kein Eingabe-Image,
+                                // Fallback: Manche Geräte liefern kein Eingabebild,
                                 // akzeptieren aber rohe YUV-Puffer (semi-planar oder planar).
                                 val buf = codec.getInputBuffer(idx)
                                 if (buf == null) {
@@ -448,7 +816,7 @@ object VideoExporter {
         return Pair(outFormat ?: format, samples)
     }
 
-    /** Füllt einen rohen YUV-Eingabepuffer (Fallback, wenn kein Eingabe-Image verfügbar ist). */
+    /** Füllt einen rohen YUV-Eingabepuffer (Fallback, wenn kein Eingabebild verfügbar ist). */
     private fun fillYuvBuffer(buf: ByteBuffer, argb: IntArray, semiPlanar: Boolean) {
         val y = ByteArray(WIDTH * HEIGHT)
         val u = ByteArray(WIDTH * HEIGHT / 4)
@@ -485,7 +853,7 @@ object VideoExporter {
         }
     }
 
-    /** Schreibt ARGB-Pixel in die YUV-Ebenen eines Encoder-Eingabildes. */
+    /** Schreibt ARGB-Pixel in die YUV-Ebenen eines Encoder-Eingabebildes. */
     private fun fillYuv420(image: Image, argb: IntArray) {
         val planes = image.planes
         val yPlane = planes[0]
@@ -626,52 +994,49 @@ object VideoExporter {
         }.getOrNull()
     }
 
-    /** Rendert eine Szene als Standbild (Gradient-Hintergrund, Foto, Emoji, Titel, Text). */
-    private fun renderSlide(slide: SlideData, index: Int): Bitmap {
-        val bmp = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bmp)
-        val palettes = arrayOf(
-            intArrayOf(0xFF1A237E.toInt(), 0xFF3949AB.toInt()),
-            intArrayOf(0xFF00695C.toInt(), 0xFF00897B.toInt()),
-            intArrayOf(0xFF4A148C.toInt(), 0xFF6A1B9A.toInt()),
-            intArrayOf(0xFF0277BD.toInt(), 0xFF0288D1.toInt()),
-            intArrayOf(0xFF283593.toInt(), 0xFF3F51B5.toInt()),
-            intArrayOf(0xFF33691E.toInt(), 0xFF558B2F.toInt()),
-            intArrayOf(0xFFBF360C.toInt(), 0xFFD84315.toInt()),
-            intArrayOf(0xFF37474F.toInt(), 0xFF455A64.toInt())
-        )
+    /**
+     * Bereitet eine Szene als Ebenen vor: Grundbild (Marke, Emoji, Quellenzeile,
+     * Szenen-Chip, Wasserzeichen), separat skaliertes Foto für den Ken-Burns-Zoom
+     * und eine transparente Textebene für den weichen Text-Einzug.
+     * Bei eingebrannten Untertiteln trägt die Szene nur den Titel, der Fließtext
+     * erscheint als zeitgesteuerte Untertitel-Box.
+     */
+    private fun renderSlideGfx(
+        slide: SlideData,
+        index: Int,
+        totalSlides: Int,
+        burnedSubs: Boolean,
+        speechDurUs: Long
+    ): SlideGfx {
+        val base = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(base)
         val colors = palettes[index % palettes.size]
         val bg = Paint()
         bg.shader = LinearGradient(0f, 0f, 0f, HEIGHT.toFloat(), colors[0], colors[1], Shader.TileMode.CLAMP)
         canvas.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bg)
 
-        var top = if (HEIGHT > WIDTH) 140f * scale else 80f * scale
-        var hasImage = false
+        var top = if (HEIGHT > WIDTH) 150f * scale else 90f * scale
+        var photo: Bitmap? = null
+        var photoRect: RectF? = null
         if (slide.photoPath != null) {
-            val photo = BitmapFactory.decodeFile(slide.photoPath)
-            if (photo != null) {
-                hasImage = true
+            val src = BitmapFactory.decodeFile(slide.photoPath)
+            if (src != null) {
                 val photoH = minOf(600f * scale, HEIGHT * 0.32f)
                 val target = RectF(60f * scale, top, WIDTH - 60f * scale, top + photoH)
-                val matrix = Matrix()
-                matrix.setRectToRect(
-                    RectF(0f, 0f, photo.width.toFloat(), photo.height.toFloat()),
-                    target,
-                    Matrix.ScaleToFit.CENTER
-                )
-                canvas.drawBitmap(photo, matrix, Paint(Paint.FILTER_BITMAP_FLAG))
-                photo.recycle()
+                photo = scalePhotoTo(src, target)
+                photoRect = target
+                src.recycle()
                 top += photoH + 60f * scale
             }
         } else if (slide.webImagePath != null) {
             // Passendes Online-Themenbild (frei lizenziert, mit Quellenzeile)
-            val web = BitmapFactory.decodeFile(slide.webImagePath)
-            if (web != null) {
-                hasImage = true
+            val src = BitmapFactory.decodeFile(slide.webImagePath)
+            if (src != null) {
                 val webH = minOf(460f * scale, HEIGHT * 0.26f)
                 val target = RectF(60f * scale, top, WIDTH - 60f * scale, top + webH)
-                drawCenterCrop(canvas, web, target)
-                web.recycle()
+                photo = scalePhotoTo(src, target)
+                photoRect = target
+                src.recycle()
                 top += webH + 20f * scale
                 val credit = slide.webImageCredit
                 if (!credit.isNullOrBlank()) {
@@ -679,12 +1044,12 @@ object VideoExporter {
                     cp.textSize = 26f * scale
                     cp.textAlign = Paint.Align.CENTER
                     cp.color = Color.argb(210, 255, 255, 255)
-                    canvas.drawText("Bild: " + credit, WIDTH / 2f, top, cp)
+                    canvas.drawText("Bild: " + credit, WIDTH / 2f, top + 18f * scale, cp)
                     top += 64f * scale
                 }
             }
         }
-        if (slide.emoji.isNotBlank() && !hasImage) {
+        if (slide.emoji.isNotBlank() && photo == null) {
             val p = Paint(Paint.ANTI_ALIAS_FLAG)
             p.textSize = 190f * scale
             p.textAlign = Paint.Align.CENTER
@@ -693,43 +1058,136 @@ object VideoExporter {
             canvas.drawText(slide.emoji, WIDTH / 2f, top + 95f * scale - (fm.top + fm.bottom) / 2f, p)
             top += 280f * scale
         }
+
+        drawSceneChip(canvas, index, totalSlides)
+        drawWatermark(canvas)
+
+        // Textebene: Titel (und ohne eingebrannte Untertitel auch der Fließtext)
         val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
         titlePaint.textSize = 62f * scale
         titlePaint.isFakeBoldText = true
         titlePaint.color = Color.WHITE
+        titlePaint.setShadowLayer(3f * scale, 0f, 2f * scale, Color.argb(110, 0, 0, 0))
         val titleLayout = StaticLayout.Builder.obtain(
             slide.title, 0, slide.title.length, titlePaint, (WIDTH - 160f * scale).toInt()
         ).setAlignment(Layout.Alignment.ALIGN_CENTER).build()
-        canvas.save()
-        canvas.translate((WIDTH - titleLayout.width) / 2f, top)
-        titleLayout.draw(canvas)
-        canvas.restore()
-        top += titleLayout.height + 60f * scale
 
-        // Fließtext – der Schriftgrad passt sich an, damit der Text auch unter
-        // einem Themenbild vollständig auf die Szene passt.
         val makeBody: (Float) -> StaticLayout = { size ->
             val bp = TextPaint(Paint.ANTI_ALIAS_FLAG)
             bp.textSize = size
             bp.color = Color.WHITE
+            bp.setShadowLayer(2f * scale, 0f, 1f * scale, Color.argb(90, 0, 0, 0))
             StaticLayout.Builder.obtain(
                 slide.text, 0, slide.text.length, bp, (WIDTH - 160f * scale).toInt()
             ).setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(0f, 1.25f).build()
         }
-        var bodySize = 42f * scale
-        var bodyLayout = makeBody(bodySize)
-        while (top + bodyLayout.height > HEIGHT - 170f * scale && bodySize > 26f * scale) {
-            bodySize -= 4f * scale
+        var bodyLayout: StaticLayout? = null
+        if (!burnedSubs && slide.text.isNotBlank()) {
+            var bodySize = 42f * scale
             bodyLayout = makeBody(bodySize)
+            while (top + titleLayout.height + 60f * scale + bodyLayout.height > HEIGHT - 160f * scale && bodySize > 26f * scale) {
+                bodySize -= 4f * scale
+                bodyLayout = makeBody(bodySize)
+            }
         }
-        canvas.save()
-        canvas.translate((WIDTH - bodyLayout.width) / 2f, top)
-        bodyLayout.draw(canvas)
-        canvas.restore()
+        val textTop = top
+        val layerH = (titleLayout.height +
+            (if (bodyLayout != null) 60f * scale + bodyLayout.height else 0f) + 8f)
+            .toInt().coerceAtLeast(1)
+            .coerceAtMost((HEIGHT - textTop).toInt().coerceAtLeast(1))
+        val textLayer = Bitmap.createBitmap(WIDTH, layerH, Bitmap.Config.ARGB_8888)
+        val tc = Canvas(textLayer)
+        tc.save()
+        tc.translate((WIDTH - titleLayout.width) / 2f, 0f)
+        titleLayout.draw(tc)
+        tc.restore()
+        if (bodyLayout != null) {
+            tc.save()
+            tc.translate((WIDTH - bodyLayout.width) / 2f, titleLayout.height + 60f * scale)
+            bodyLayout.draw(tc)
+            tc.restore()
+        }
 
-        // Wasserzeichen: Logo-Marke + „Wer Wie Was“-Schriftzug in jeder Szene
-        drawWatermark(canvas)
-        return bmp
+        val captions = if (burnedSubs) buildCaptions(slide, speechDurUs) else emptyList()
+        return SlideGfx(base, photo, photoRect, textLayer, textTop, layerH, captions)
+    }
+
+    /** Teilt den Szenentext in kurze Untertitel-Häppchen mit proportionaler Zeitlast. */
+    private fun buildCaptions(slide: SlideData, speechDurUs: Long): List<Caption> {
+        if (speechDurUs <= 0 || slide.text.isBlank()) return emptyList()
+        val chunks = mutableListOf<String>()
+        for (line in slide.text.split('\n')) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) continue
+            var cur = ""
+            for (raw in trimmed.split(Regex("(?<=[.!?…])\\s+"))) {
+                val p = raw.trim()
+                if (p.isEmpty()) continue
+                if (cur.isNotEmpty() && cur.length + p.length + 1 > 90) {
+                    chunks.add(cur)
+                    cur = p
+                } else {
+                    cur = if (cur.isEmpty()) p else cur + " " + p
+                }
+            }
+            if (cur.isNotEmpty()) chunks.add(cur)
+        }
+        if (chunks.isEmpty()) return emptyList()
+        val totalLen = chunks.sumOf { it.length }.coerceAtLeast(1)
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        paint.textSize = 34f * scale
+        paint.isFakeBoldText = true
+        paint.color = Color.WHITE
+        paint.setShadowLayer(2f * scale, 0f, 1f * scale, Color.argb(160, 0, 0, 0))
+        val maxW = (WIDTH - 90f * scale).toInt()
+        val padH = 20f * scale
+        val padV = 14f * scale
+        var t = 0L
+        val out = mutableListOf<Caption>()
+        for (ch in chunks) {
+            val d = speechDurUs * ch.length / totalLen
+            val layout = StaticLayout.Builder.obtain(ch, 0, ch.length, paint, maxW)
+                .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                .setLineSpacing(0f, 1.15f)
+                .build()
+            val boxW = minOf(layout.width + padH * 2, maxW + padH * 2)
+            val boxH = layout.height + padV * 2
+            out.add(Caption(t, t + d, ch, layout, boxW, boxH))
+            t += d
+        }
+        return out
+    }
+
+    /** Skaliert ein Foto formatfüllend in das Zielrechteck plus Zoom-Reserve (Ken Burns). */
+    private fun scalePhotoTo(src: Bitmap, target: RectF): Bitmap {
+        val pad = 1f + ZOOM_AMOUNT + 0.04f
+        val w = (target.width() * pad).toInt().coerceAtLeast(8)
+        val h = (target.height() * pad).toInt().coerceAtLeast(8)
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        drawCenterCrop(c, src, RectF(0f, 0f, w.toFloat(), h.toFloat()))
+        return out
+    }
+
+    /** Kleiner Chip oben rechts mit der Szenen-Nummer. */
+    private fun drawSceneChip(c: Canvas, index: Int, total: Int) {
+        val label = "Szene " + (index + 1) + " / " + total
+        val p = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        p.textSize = 26f * scale
+        p.isFakeBoldText = true
+        p.color = Color.argb(200, 255, 255, 255)
+        val chip = Paint(Paint.ANTI_ALIAS_FLAG)
+        chip.color = Color.argb(60, 255, 255, 255)
+        val w = p.measureText(label)
+        val padH = 16f * scale
+        val rect = RectF(
+            WIDTH - w - padH * 2 - 24f * scale,
+            20f * scale,
+            WIDTH - 24f * scale,
+            64f * scale
+        )
+        c.drawRoundRect(rect, 22f * scale, 22f * scale, chip)
+        c.drawText(label, rect.left + padH, rect.centerY() - (p.fontMetrics.top + p.fontMetrics.bottom) / 2f, p)
     }
 
     /**
@@ -791,6 +1249,40 @@ object VideoExporter {
         canvas.drawText(" Was", tx + w1 + w2, base, text)
     }
 
+    /** Große Logo-Marke für Intro- und Abschluss-Karte (Kamera mit blauem Kreis). */
+    private fun drawBigLogo(c: Canvas, cx: Float, cy: Float, r: Float, alpha: Int) {
+        val a = alpha.coerceIn(0, 255)
+        val badge = Paint(Paint.ANTI_ALIAS_FLAG)
+        badge.color = Color.argb((a * 235) / 255, 255, 255, 255)
+        val ink = Paint(Paint.ANTI_ALIAS_FLAG)
+        ink.color = Color.argb((a * 245) / 255, 32, 33, 36)
+        val blue = Paint(Paint.ANTI_ALIAS_FLAG)
+        blue.color = Color.argb(a, 66, 133, 244)
+        val white = Paint(Paint.ANTI_ALIAS_FLAG)
+        white.color = Color.argb(a, 255, 255, 255)
+        val line = Paint(Paint.ANTI_ALIAS_FLAG)
+        line.color = Color.argb(a, 255, 255, 255)
+        line.style = Paint.Style.STROKE
+        line.strokeWidth = r * 0.10f
+        line.strokeCap = Paint.Cap.ROUND
+
+        c.drawCircle(cx, cy, r, badge)
+        c.drawRoundRect(
+            RectF(cx - r * 0.62f, cy - r * 0.42f, cx + r * 0.62f, cy + r * 0.42f),
+            r * 0.20f, r * 0.20f, ink
+        )
+        c.drawRoundRect(
+            RectF(cx - r * 0.28f, cy - r * 0.62f, cx + r * 0.28f, cy - r * 0.34f),
+            r * 0.10f, r * 0.10f, ink
+        )
+        val lens = r * 0.40f
+        c.drawCircle(cx, cy + r * 0.05f, lens, blue)
+        c.drawCircle(cx, cy + r * 0.05f, lens * 0.42f, white)
+        c.drawLine(cx - lens * 0.85f, cy - r * 0.26f, cx, cy + r * 0.05f, line)
+        c.drawLine(cx + lens * 0.85f, cy - r * 0.26f, cx, cy + r * 0.05f, line)
+        c.drawLine(cx, cy + r * 0.05f, cx, cy + r * 0.36f, line)
+    }
+
     /** Zeichnet eine Bitmap formatfüllend und mittig beschnitten in ein Zielrechteck. */
     private fun drawCenterCrop(canvas: Canvas, bmp: Bitmap, target: RectF) {
         val scale = maxOf(target.width() / bmp.width, target.height() / bmp.height)
@@ -806,7 +1298,3 @@ object VideoExporter {
         canvas.restore()
     }
 }
-
-
-
-
