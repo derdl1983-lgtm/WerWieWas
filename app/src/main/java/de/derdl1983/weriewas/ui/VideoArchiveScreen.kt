@@ -163,6 +163,20 @@ private fun shareVideo(context: Context, uri: Uri, pkg: String?) {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         if (pkg != null) setPackage(pkg)
     }
+    // Installations-Check: Nicht installierte Ziel-Apps sofort abfangen,
+    // statt den Start später crashen zu lassen (Fallback: System-Auswahl).
+    if (pkg != null) {
+        val installed = try {
+            context.packageManager.getPackageInfo(pkg, 0)
+            true
+        } catch (e: Exception) {
+            false
+        }
+        if (!installed) {
+            send.setPackage(null)
+            Toast.makeText(context, "Ziel-App nicht installiert – System-Auswahl wird geöffnet.", Toast.LENGTH_SHORT).show()
+        }
+    }
     try {
         context.startActivity(send.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     } catch (e: ActivityNotFoundException) {

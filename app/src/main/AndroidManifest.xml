@@ -6,6 +6,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Benachrichtigungen für den Schnellzugriff auf dem Sperrbildschirm (ab Android 13) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Video-Export als Vordergrund-Dienst: läuft weiter, wenn die App
+         geschlossen wird (Android 14+ verlangt die explizite Dienst-Art). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- Paketsichtbarkeit: Apps sehen, die Teilen (WhatsApp, Instagram, Facebook,
          Telegram, Signal, YouTube, TikTok …) unterstützen – nötig ab Android 11. -->
@@ -48,6 +52,13 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- Erstellt das Erklärvideo im Hintergrund weiter, während die App
+             geschlossen ist; Fortschritt und Ergebnis erscheinen als Benachrichtigung. -->
+        <service
+            android:name=".util.ExportService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <service
             android:name=".service.CameraTileService"

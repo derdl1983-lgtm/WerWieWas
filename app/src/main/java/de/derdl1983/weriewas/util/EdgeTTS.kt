@@ -407,11 +407,12 @@ object EdgeTTS {
     /**
      * Synthetisiert Text zu einer MP3-Datei (24 kHz, 48 kbit/s, mono).
      * Blockierend – im Hintergrund-Thread aufrufen. ratePercent: -50 bis +100.
-     * Bei 401/403 wird die Geräte-Uhr anhand der Server-Zeit korrigiert und
-     * mehrfach erneut versucht; zusätzlich läuft nach dem neuen Host
+     * ssml = true fügt nach Satz- und Gliederungszeichen natürliche Sprechpausen
+     * ein (SSML-Breaks). Bei 401/403 wird die Geräte-Uhr anhand der Server-Zeit
+     * korrigiert und mehrfach erneut versucht; zusätzlich läuft nach dem neuen Host
      * (api.msedgeservices.com) immer noch der alte Host als Fallback.
      */
-    fun synthesizeToMp3(text: String, voice: String, ratePercent: Int, outFile: File): File {
+    fun synthesizeToMp3(text: String, voice: String, ratePercent: Int, outFile: File, ssml: Boolean = false): File {
         var lastSkew: SkewException? = null
         var lastHard: IOException? = null
         // Erst der neue Host (api.msedgeservices.com), danach der alte:
@@ -421,7 +422,7 @@ object EdgeTTS {
             var skew = 0L
             for (attempt in 0 until 3) {
                 try {
-                    return synthesizeOnce(text, voice, ratePercent, outFile, skew, useLegacy)
+                    return synthesizeOnce(text, voice, ratePercent, outFile, skew, useLegacy, ssml)
                 } catch (e: SkewException) {
                     skew = e.skewSeconds
                     lastSkew = e
@@ -438,7 +439,7 @@ object EdgeTTS {
         )
     }
 
-    private fun synthesizeOnce(text: String, voice: String, ratePercent: Int, outFile: File, skewSeconds: Long, useLegacyHost: Boolean): File {
+    private fun synthesizeOnce(text: String, voice: String, ratePercent: Int, outFile: File, skewSeconds: Long, useLegacyHost: Boolean, ssml: Boolean): File {
         // Neuer Host: Token als Ocp-Apim-Subscription-Key (Referenz: rany2/edge-tts
         // PR #491, constants.py/communicate.py). Alter Host: TrustedClientToken.
         val secMsGec = secMsGecV2(skewSeconds)
@@ -484,10 +485,18 @@ object EdgeTTS {
                         + "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},"
                         + "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}")
                     webSocket.send(config)
-                    val escaped = text
+                    var escaped = text
                         .replace("&", "&amp;")
                         .replace("<", "&lt;")
                         .replace(">", "&gt;")
+                    // SSML-Pausen & Betonung: Nach Satz- und Gliederungszeichen
+                    // kurze Sprechpausen einfügen – klingt deutlich natürlicher
+                    // und lässt den Erklärtext ruhiger und verständlicher wirken.
+                    if (ssml) {
+                        escaped = escaped
+                            .replace(Regex("([.!?…])(?=\\s|$)"), "$1<break time='320ms'/>")
+                            .replace(Regex("([,;:])(?=\\s|$)"), "$1<break time='150ms'/>")
+                    }
                     val rate = (if (ratePercent >= 0) "+" + ratePercent else ratePercent.toString()) + "%"
                     val ssml = ("<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='de-DE'>"
                         + "<voice name='" + voice + "'>"

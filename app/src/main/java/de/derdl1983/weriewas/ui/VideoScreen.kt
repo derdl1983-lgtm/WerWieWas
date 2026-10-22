@@ -1,11 +1,14 @@
 package de.derdl1983.weriewas.ui
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -13,6 +16,8 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -71,9 +76,13 @@ import androidx.compose.ui.unit.sp
 import de.derdl1983.weriewas.data.Discovery
 import de.derdl1983.weriewas.data.DiscoveryStore
 import de.derdl1983.weriewas.util.EdgeTTS
+import de.derdl1983.weriewas.util.ExportBus
+import de.derdl1983.weriewas.util.ExportService
 import de.derdl1983.weriewas.util.Images
 import de.derdl1983.weriewas.util.VideoExporter
 import de.derdl1983.weriewas.util.WebImages
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -183,18 +192,29 @@ fun VideoScreen(
     var voiceB by remember { mutableStateOf<Voice?>(null) }
     var dualVoices by remember { mutableStateOf(false) }
     var speed by remember { mutableStateOf(1f) }
-    var exporting by remember { mutableStateOf(false) }
-    var exportProgress by remember { mutableStateOf("") }
-    var exportFrac by remember { mutableStateOf(0f) }
-    var exportMessage by remember { mutableStateOf<String?>(null) }
-    var exportedUri by remember { mutableStateOf<Uri?>(null) }
-    var exportedSrt by remember { mutableStateOf<Uri?>(null) }
+    // Export läuft in einem Vordergrund-Dienst weiter – auch bei geschlossener App.
+    // Fortschritt und Ergebnis liegen global im ExportBus und überleben das
+    // Verlassen und erneute Öffnen des Screens.
+    val exporting = ExportBus.running
+    val exportFrac = ExportBus.frac
+    val exportProgress = ExportBus.pctText
+    val busResult = if (ExportBus.resultId == discovery.id) ExportBus.result else null
+    val exportMessage = busResult?.let { r ->
+        if (r.shareUri != null) r.message + " Das Video liegt dauerhaft im Video-Archiv auf der Startseite." else r.message
+    }
+    val exportedUri = busResult?.shareUri
+    val exportedSrt = busResult?.srtUri
+    val exportedThumb = busResult?.thumbUri
+    val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     var videoFormat by rememberSaveable {
         mutableStateOf(prefs.getString("video_format", "portrait") ?: "portrait")
     }
     var wantSrt by rememberSaveable { mutableStateOf(prefs.getBoolean("video_srt", true)) }
     var burnedSubs by rememberSaveable { mutableStateOf(prefs.getBoolean("video_burn_subs", false)) }
     var wantMusic by rememberSaveable { mutableStateOf(prefs.getBoolean("video_music", true)) }
+    var musicMood by rememberSaveable {
+        mutableStateOf(prefs.getString("music_mood", "neugierig") ?: "neugierig")
+    }
     val formatLabels = listOf(
         "portrait" to "Hochformat",
         "landscape720" to "Quer 720p",
@@ -340,9 +360,9 @@ fun VideoScreen(
         edgeError = null
         try {
             val mp3 = withContext(Dispatchers.IO) {
-                val f = File(context.cacheDir, "www_edge_" + discovery.id + "_" + page + "_" + rp + ".mp3")
+                val f = File(context.cacheDir, "www_edge_s_" + discovery.id + "_" + page + "_" + rp + ".mp3")
                 if (!f.exists() || f.length() < 200L) {
-                    EdgeTTS.synthesizeToMp3(slide.title + ". " + slide.text, voice, rp, f)
+                    EdgeTTS.synthesizeToMp3(slide.title + ". " + slide.text, voice, rp, f, ssml = true)
                 }
                 f
             }
@@ -672,6 +692,41 @@ fun VideoScreen(
                 )
                 Text("Hintergrundmusik (dezent, automatisch leiser unter der Stimme)", style = MaterialTheme.typography.bodyMedium)
             }
+            if (wantMusic) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Musik-Stimmung",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    listOf(
+                        "neugierig" to "Neugierig",
+                        "froehlich" to "Fröhlich",
+                        "ruhig" to "Ruhig"
+                    ).forEach { (key, label) ->
+                        OutlinedButton(
+                            onClick = {
+                                musicMood = key
+                                prefs.edit().putString("music_mood", key).apply()
+                            },
+                            colors = if (musicMood == key) {
+                                ButtonDefaults.outlinedButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                                )
+                            } else {
+                                ButtonDefaults.outlinedButtonColors()
+                            }
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(6.dp))
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -714,96 +769,45 @@ fun VideoScreen(
             }
             Button(
                 onClick = {
-                    if (!exporting) {
-                        exporting = true
-                        exportMessage = null
-                        exportedUri = null
-                        exportedSrt = null
-                        exportProgress = ""
-                        exportFrac = 0f
-                        playing = false
-                        scope.launch {
-                            val result = withContext(Dispatchers.IO) {
-                                try {
-                                    val webList = webImages.value
-                                    val data = slides.mapIndexed { i, s ->
-                                        val wi = if (s.showPhoto) null else webList?.getOrNull(i)
-                                        VideoExporter.SlideData(
-                                            s.title,
-                                            s.text,
-                                            s.emoji,
-                                            if (s.showPhoto) discovery.imagePath else null,
-                                            wi?.filePath,
-                                            wi?.credit
-                                        )
-                                    }
-                                    val audioFiles: List<File?>? = if (useEdge) {
-                                        val vA = if (edgeA.isNotBlank()) edgeA else edgeB
-                                        val vB = if (edgeB.isNotBlank()) edgeB else edgeA
-                                        val rp = ratePercent(speed)
-                                        slides.mapIndexed { i, s ->
-                                            try {
-                                                val mp3 = File(context.cacheDir, "www_exp_" + discovery.id + "_" + i + "_" + rp + ".mp3")
-                                                val wav = File(context.cacheDir, "www_exp_" + discovery.id + "_" + i + "_" + rp + ".wav")
-                                                if (!mp3.exists() || mp3.length() < 200L) {
-                                                    EdgeTTS.synthesizeToMp3(
-                                                        s.title + ". " + s.text,
-                                                        if (i % 2 == 1) vB else vA,
-                                                        rp,
-                                                        mp3
-                                                    )
-                                                }
-                                                if (!wav.exists() || wav.lastModified() < mp3.lastModified()) {
-                                                    EdgeTTS.mp3ToWav(mp3, wav)
-                                                }
-                                                wav
-                                            } catch (e: Exception) {
-                                                null
-                                            }
-                                        }
-                                    } else {
-                                        null
-                                    }
-                                    val videoSize = when (videoFormat) {
-                                        "landscape720" -> 1280 to 720
-                                        "landscape1080" -> 1920 to 1080
-                                        else -> 720 to 1280
-                                    }
-                                    VideoExporter.export(
-                                        context,
-                                        data,
-                                        voiceA,
-                                        voiceB,
-                                        speed,
-                                        audioFiles,
-                                        videoSize.first,
-                                        videoSize.second,
-                                        wantSrt,
-                                        burnedSubs,
-                                        wantMusic
-                                    ) { p ->
-                                        exportFrac = p.coerceIn(0f, 1f)
-                                        exportProgress = (p * 100).toInt().toString() + " %"
-                                    }
-                                } catch (e: Exception) {
-                                    de.derdl1983.weriewas.WerWieWasApp.logExportError(context, e)
-                                    VideoExporter.ExportResult(
-                                        "Export fehlgeschlagen: " + (e.message ?: "unbekannter Fehler") +
-                                            " – Details im Fehlerbericht (Einstellungen → Daten → Fehlerbericht teilen).",
-                                        null
-                                    )
-                                }
-                            }
-                            exporting = false
-                            exportMessage = if (result.shareUri != null) {
-                                result.message + " Das Video liegt dauerhaft im Video-Archiv auf der Startseite."
-                            } else {
-                                result.message
-                            }
-                            exportedUri = result.shareUri
-                            exportedSrt = result.srtUri
-                        }
+                    // Export startet als Vordergrund-Dienst und läuft weiter,
+                    // auch wenn die App geschlossen wird.
+                    playing = false
+                    if (Build.VERSION.SDK_INT >= 33 &&
+                        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
+                    val arr = JSONArray()
+                    val webList = webImages.value
+                    slides.forEachIndexed { i, s ->
+                        val wi = if (s.showPhoto) null else webList?.getOrNull(i)
+                        arr.put(
+                            JSONObject()
+                                .put("title", s.title)
+                                .put("text", s.text)
+                                .put("emoji", s.emoji)
+                                .put("photo", if (s.showPhoto) (discovery.imagePath ?: "") else "")
+                                .put("web", wi?.filePath ?: "")
+                                .put("credit", wi?.credit ?: "")
+                        )
+                    }
+                    ExportService.start(
+                        context,
+                        discovery.id,
+                        arr.toString(),
+                        videoFormat,
+                        wantSrt,
+                        burnedSubs,
+                        wantMusic,
+                        musicMood,
+                        speed,
+                        useEdge,
+                        edgeA,
+                        edgeB,
+                        voiceA?.name ?: "",
+                        voiceB?.name ?: ""
+                    )
                 },
                 enabled = !exporting
             ) {
@@ -824,7 +828,7 @@ fun VideoScreen(
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "Fortschritt: " + (if (exportProgress.isBlank()) "0 %" else exportProgress) +
-                        " – Text, Szenen, Intro & Outro werden eingebaut. Bitte App offen lassen.",
+                        " – Text, Szenen, Intro & Outro werden eingebaut. Die App kann geschlossen werden, der Export läuft im Hintergrund weiter.",
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
@@ -885,6 +889,20 @@ fun VideoScreen(
                     onClick = { shareVideo(context, vUri, null) },
                     modifier = Modifier.fillMaxWidth()
                 ) { Text("Video teilen … (alle Apps)") }
+                val tUri = exportedThumb
+                if (tUri != null) {
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = { shareThumb(context, tUri) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Thumbnail (Cover) teilen …") }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Das automatisch erstellte Cover (Bilder/WerWieWas) eignet sich als Thumbnail für YouTube, TikTok & Instagram.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "YouTube und TikTok öffnen ihren Upload mit dem Video als Entwurf – " +
@@ -930,6 +948,23 @@ private fun shareSrt(context: Context, uri: Uri) {
     }
 }
 
+/** Übergibt das automatisch erstellte Cover-Bild (Thumbnail) an eine Ziel-App (z. B. YouTube-Upload). */
+private fun shareThumb(context: Context, uri: Uri) {
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "image/jpeg"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_SUBJECT, "Wer Wie Was – Video-Cover")
+        clipData = ClipData.newRawUri("cover", uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching {
+        context.startActivity(
+            Intent.createChooser(send, "Cover teilen")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
+}
+
 /** Übergibt das exportierte Video an eine Ziel-App (z. B. YouTube, TikTok) oder die System-Auswahl. */
 private fun shareVideo(context: Context, uri: Uri, pkg: String?) {
     val send = Intent(Intent.ACTION_SEND).apply {
@@ -939,6 +974,20 @@ private fun shareVideo(context: Context, uri: Uri, pkg: String?) {
         clipData = ClipData.newRawUri("video", uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         if (pkg != null) setPackage(pkg)
+    }
+    // Installations-Check: Nicht installierte Ziel-Apps sofort abfangen,
+    // statt den Start später crashen zu lassen (Fallback: System-Auswahl).
+    if (pkg != null) {
+        val installed = try {
+            context.packageManager.getPackageInfo(pkg, 0)
+            true
+        } catch (e: Exception) {
+            false
+        }
+        if (!installed) {
+            send.setPackage(null)
+            Toast.makeText(context, "Ziel-App nicht installiert – System-Auswahl wird geöffnet.", Toast.LENGTH_SHORT).show()
+        }
     }
     try {
         context.startActivity(send.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

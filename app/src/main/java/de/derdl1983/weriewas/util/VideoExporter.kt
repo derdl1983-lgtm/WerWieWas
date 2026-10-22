@@ -33,8 +33,14 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import androidx.core.content.FileProvider
 import de.derdl1983.weriewas.R
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
@@ -118,8 +124,9 @@ object VideoExporter {
      * Ergebnis eines Video-Exports: Beschreibung des Speicherorts und (wo möglich)
      * eine Content-URI, über die das Video direkt geteilt bzw. hochgeladen werden kann.
      * srtUri: Untertiteldatei (SRT), wenn angefordert und erfolgreich gespeichert.
+     * thumbUri: automatisch erstelltes Video-Cover (JPEG) für YouTube/TikTok.
      */
-    data class ExportResult(val message: String, val shareUri: Uri?, val srtUri: Uri? = null)
+    data class ExportResult(val message: String, val shareUri: Uri?, val srtUri: Uri? = null, val thumbUri: Uri? = null)
 
     /**
      * Erstellt das Video und gibt eine Beschreibung des Speicherorts zurück.
@@ -129,7 +136,10 @@ object VideoExporter {
      * videoWidth/videoHeight: Auflösung (z. B. 1280x720/1920x1080 für YouTube-Querformat);
      * wantSrt: Untertitel als SRT-Datei mitspeichern;
      * burnedSubs: Untertitel direkt ins Video einbrennen (TikTok-Stil);
-     * backgroundMusic: dezente, generierte Hintergrundmusik unter die Stimme mischen.
+     * backgroundMusic: dezente, generierte Hintergrundmusik unter die Stimme mischen;
+     * musicMood: Stimmung der Hintergrundmusik (neugierig / froehlich / ruhig);
+     * cacheKey: Entdeckungs-ID für den Absturz-Schutz (fertige Spuren werden im
+     * App-Cache abgelegt und beim nächsten Versuch wiederverwendet);
      */
     fun export(
         context: Context,
@@ -143,6 +153,8 @@ object VideoExporter {
         wantSrt: Boolean = false,
         burnedSubs: Boolean = false,
         backgroundMusic: Boolean = true,
+        musicMood: String = "neugierig",
+        cacheKey: String = "",
         onProgress: (progress: Float) -> Unit
     ): ExportResult {
         if (slides.isEmpty()) throw ExportException("Keine Inhalte zum Export vorhanden.")
@@ -153,6 +165,47 @@ object VideoExporter {
         // Intro-/Outro-Karte und Wasserzeichen laden.
         logoMark = context.getDrawable(R.drawable.ic_launcher_foreground)
         onProgress(0.02f)
+        // Absturz-Schutz: Fertig encodierte Ton-/Videospuren werden im App-Cache
+        // abgelegt. Bricht der Export (oder die App) mitten ab, läuft der nächste
+        // Versuch mit den bereits fertigen Spuren weiter statt komplett neu.
+        val cacheHash = trackCacheHash(slides, rate, voiceA?.name, voiceB?.name, preAudio, burnedSubs, backgroundMusic, musicMood, videoWidth, videoHeight)
+        val useCache = cacheKey.isNotBlank()
+        val audioCacheFile = if (useCache) File(context.cacheDir, "www_track_" + cacheKey + "_" + cacheHash + "_a.bin") else null
+        val videoCacheFile = if (useCache) File(context.cacheDir, "www_track_" + cacheKey + "_" + cacheHash + "_v.bin") else null
+        if (useCache) {
+            context.cacheDir.listFiles()?.forEach { f ->
+                if (f.isFile && f.name.startsWith("www_track_") &&
+                    f.name != audioCacheFile?.name && f.name != videoCacheFile?.name
+                ) {
+                    runCatching { f.delete() }
+                }
+            }
+        }
+        val audioCached = if (useCache) loadTrackCache(audioCacheFile) else null
+        val videoCached = if (useCache) loadTrackCache(videoCacheFile) else null
+        if (audioCached != null && videoCached != null) {
+            // Beide Spuren liegen bereits fertig im Cache: nur noch muxen & speichern
+            onProgress(0.90f)
+            val file = try {
+                mux(context, audioCached.format to audioCached.samples, videoCached.format to videoCached.samples)
+            } catch (e: ExportException) {
+                throw e
+            } catch (e: Exception) {
+                throw ExportException("Video-Datei konnte nicht erstellt werden: " + (e.message ?: e.javaClass.simpleName))
+            }
+            onProgress(0.97f)
+            val videoBase = file.name.removeSuffix(".mp4")
+            val videoResult = saveVideo(context, file)
+            val srtUri = if (wantSrt) saveSrt(context, videoBase, buildSrt(slides, audioCached.speechRanges)) else null
+            val thumbUri = runCatching { saveThumb(context, videoBase, slides.first()) }.getOrNull()
+            onProgress(1f)
+            val message = if (srtUri != null) {
+                videoResult.message + " – Untertitel (SRT) gespeichert"
+            } else {
+                videoResult.message
+            }
+            return ExportResult(message, videoResult.shareUri, srtUri, thumbUri)
+        }
         val introUs = (INTRO_SECONDS * 1_000_000).toLong()
         val outroUs = (OUTRO_SECONDS * 1_000_000).toLong()
         val fadeUs = (FADE_SECONDS * 1_000_000).toLong()
@@ -189,16 +242,27 @@ object VideoExporter {
         val durationUs = cursor + outroUs
         val monoPcm = pcmOut.toByteArray()
 
-        // Hintergrundmusik + Sprachausgabe zu einer Stereospur mischen
-        val stereoPcm = mixAudio(monoPcm, durationUs, speechRanges, backgroundMusic)
-        onProgress(0.32f)
-
-        val audio = try {
-            encodeAudio(stereoPcm, TARGET_RATE, CHANNELS)
-        } catch (e: ExportException) {
-            throw e
-        } catch (e: Exception) {
-            throw ExportException("Tonspur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
+        // Hintergrundmusik (gewählte Stimmung) + Sprachausgabe mischen und
+        // auf YouTube-Lautstärke (−14 LUFS) normalisieren.
+        val audio: Pair<MediaFormat, List<Sample>> = if (audioCached != null) {
+            audioCached.format to audioCached.samples
+        } else {
+            val stereoPcm = normalizeLoudness(
+                mixAudio(monoPcm, durationUs, speechRanges, backgroundMusic, musicMood)
+            )
+            onProgress(0.32f)
+            val enc = try {
+                encodeAudio(stereoPcm, TARGET_RATE, CHANNELS)
+            } catch (e: ExportException) {
+                throw e
+            } catch (e: Exception) {
+                throw ExportException("Tonspur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
+            }
+            onProgress(0.35f)
+            if (audioCacheFile != null) {
+                saveTrackCache(audioCacheFile, MediaFormat.MIMETYPE_AUDIO_AAC, enc.first, enc.second, durationUs, speechRanges)
+            }
+            enc
         }
         onProgress(0.35f)
 
@@ -234,14 +298,33 @@ object VideoExporter {
             topicText, 0, topicText.length, topicPaint, (WIDTH - 160f * scale).toInt()
         ).setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(0f, 1.2f).build()
 
+        // Wiederverwendete Paint-Objekte: Pro Frame neu angelegte Paints machen
+        // den Video-Export auf schwächeren Geräten spürbar langsamer.
+        val progressTrackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        progressTrackPaint.color = Color.argb(40, 255, 255, 255)
+        val progressFillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        progressFillPaint.color = Color.rgb(66, 133, 244)
+        val captionBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        captionBgPaint.color = Color.argb(200, 10, 14, 30)
+        val textLayerPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        val photoPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        val cardBgPaint = Paint()
+        cardBgPaint.shader = LinearGradient(
+            0f, 0f, 0f, HEIGHT.toFloat(),
+            0xFF0A1633.toInt(), 0xFF1A50A8.toInt(), Shader.TileMode.CLAMP
+        )
+        val outroTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        outroTextPaint.textAlign = Paint.Align.CENTER
+        outroTextPaint.textSize = 36f * scale
+        outroTextPaint.color = Color.argb(225, 255, 255, 255)
+        val wordmarkPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        wordmarkPaint.isFakeBoldText = true
+        wordmarkPaint.setShadowLayer(5f * scale, 0f, 2f * scale, Color.argb(140, 0, 0, 0))
+
         fun drawProgress(c: Canvas, t: Long) {
-            val track = Paint(Paint.ANTI_ALIAS_FLAG)
-            track.color = Color.argb(40, 255, 255, 255)
-            c.drawRect(0f, HEIGHT - 5f * scale, WIDTH.toFloat(), HEIGHT.toFloat(), track)
-            val fill = Paint(Paint.ANTI_ALIAS_FLAG)
-            fill.color = Color.rgb(66, 133, 244)
+            c.drawRect(0f, HEIGHT - 5f * scale, WIDTH.toFloat(), HEIGHT.toFloat(), progressTrackPaint)
             val w = WIDTH * (t.toFloat() / durationUs.toFloat()).coerceIn(0f, 1f)
-            c.drawRect(0f, HEIGHT - 5f * scale, w, HEIGHT.toFloat(), fill)
+            c.drawRect(0f, HEIGHT - 5f * scale, w, HEIGHT.toFloat(), progressFillPaint)
         }
 
         fun drawCaption(c: Canvas, i: Int, t: Long) {
@@ -250,9 +333,7 @@ object VideoExporter {
             val left = (WIDTH - cap.boxW) / 2f
             val top = HEIGHT - 120f * scale - cap.boxH
             val box = RectF(left, top, left + cap.boxW, top + cap.boxH)
-            val bgp = Paint(Paint.ANTI_ALIAS_FLAG)
-            bgp.color = Color.argb(200, 10, 14, 30)
-            c.drawRoundRect(box, 14f * scale, 14f * scale, bgp)
+            c.drawRoundRect(box, 14f * scale, 14f * scale, captionBgPaint)
             c.save()
             c.translate((WIDTH - cap.layout.width) / 2f, box.top + 14f * scale)
             cap.layout.draw(c)
@@ -276,7 +357,7 @@ object VideoExporter {
                 m.postTranslate(-p.width / 2f, -p.height / 2f)
                 m.postScale(z, z)
                 m.postTranslate(r.centerX(), r.centerY())
-                c.drawBitmap(p, m, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+                c.drawBitmap(p, m, photoPaint)
                 c.restore()
             }
             val tl = g.textLayer
@@ -284,11 +365,10 @@ object VideoExporter {
                 // Titel/Text fahren sanft ein und blenden ein
                 val a = ((t - sceneStart[i]).toFloat() / (TEXT_FADE_SECONDS * 1_000_000f)).coerceIn(0f, 1f)
                 val ease = a * a * (3f - 2f * a)
-                val pa = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
-                pa.alpha = (ease * 255).toInt()
+                textLayerPaint.alpha = (ease * 255).toInt()
                 val dy = (1f - ease) * 26f * scale
                 val src = Rect(0, 0, WIDTH, g.textH)
-                c.drawBitmap(tl, src, RectF(0f, g.textTop + dy, WIDTH.toFloat(), g.textTop + dy + g.textH), pa)
+                c.drawBitmap(tl, src, RectF(0f, g.textTop + dy, WIDTH.toFloat(), g.textTop + dy + g.textH), textLayerPaint)
             }
             if (burnedSubs) drawCaption(c, i, t)
             drawProgress(c, t)
@@ -296,10 +376,8 @@ object VideoExporter {
 
         fun drawWordmark(c: Canvas, y: Float, size: Float, alpha: Int) {
             val a = alpha.coerceIn(0, 255)
-            val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+            val tp = wordmarkPaint
             tp.textSize = size
-            tp.isFakeBoldText = true
-            tp.setShadowLayer(5f * scale, 0f, 2f * scale, Color.argb(140, 0, 0, 0))
             val s1 = "Wer "
             val s2 = "Wie"
             val s3 = " Was"
@@ -316,12 +394,7 @@ object VideoExporter {
         }
 
         fun drawCard(c: Canvas, t: Long, cardStart: Long, intro: Boolean) {
-            val bg = Paint()
-            bg.shader = LinearGradient(
-                0f, 0f, 0f, HEIGHT.toFloat(),
-                0xFF0A1633.toInt(), 0xFF1A50A8.toInt(), Shader.TileMode.CLAMP
-            )
-            c.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bg)
+            c.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), cardBgPaint)
             val a = ((t - cardStart).toFloat() / 900_000f).coerceIn(0f, 1f)
             val ease = a * a * (3f - 2f * a)
             val cy = HEIGHT * (if (intro) 0.34f else 0.38f)
@@ -340,12 +413,8 @@ object VideoExporter {
                 topicLayout.draw(c)
                 c.restore()
             } else {
-                val p2 = Paint(Paint.ANTI_ALIAS_FLAG)
-                p2.textAlign = Paint.Align.CENTER
-                p2.textSize = 36f * scale
-                p2.color = Color.argb(225, 255, 255, 255)
-                c.drawText("Einfach ein Foto machen –", WIDTH / 2f, cy + 310f * scale, p2)
-                c.drawText("die App erklärt den Rest!", WIDTH / 2f, cy + 360f * scale, p2)
+                c.drawText("Einfach ein Foto machen –", WIDTH / 2f, cy + 310f * scale, outroTextPaint)
+                c.drawText("die App erklärt den Rest!", WIDTH / 2f, cy + 360f * scale, outroTextPaint)
             }
             drawProgress(c, t)
         }
@@ -421,14 +490,22 @@ object VideoExporter {
             return out
         }
 
-        val video = try {
-            encodeVideo(durationUs, { t -> renderFrame(t) }) { p ->
-                onProgress(0.45f + 0.50f * p.coerceIn(0f, 1f))
+        val video: Pair<MediaFormat, List<Sample>> = if (videoCached != null) {
+            videoCached.format to videoCached.samples
+        } else {
+            val enc = try {
+                encodeVideo(durationUs, { t -> renderFrame(t) }) { p ->
+                    onProgress(0.45f + 0.50f * p.coerceIn(0f, 1f))
+                }
+            } catch (e: ExportException) {
+                throw e
+            } catch (e: Exception) {
+                throw ExportException("Videospur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
             }
-        } catch (e: ExportException) {
-            throw e
-        } catch (e: Exception) {
-            throw ExportException("Videospur konnte nicht encodiert werden: " + (e.message ?: e.javaClass.simpleName))
+            if (videoCacheFile != null) {
+                saveTrackCache(videoCacheFile, MediaFormat.MIMETYPE_VIDEO_AVC, enc.first, enc.second, 0L, emptyList())
+            }
+            enc
         }
         val file = try {
             mux(context, audio, video)
@@ -441,13 +518,15 @@ object VideoExporter {
         val videoBase = file.name.removeSuffix(".mp4")
         val videoResult = saveVideo(context, file)
         val srtUri = if (wantSrt) saveSrt(context, videoBase, buildSrt(slides, speechRanges)) else null
+        // Automatisches Video-Cover (Thumbnail) für YouTube/TikTok mitspeichern
+        val thumbUri = runCatching { saveThumb(context, videoBase, slides.first()) }.getOrNull()
         onProgress(1f)
         val message = if (srtUri != null) {
             videoResult.message + " – Untertitel (SRT) gespeichert"
         } else {
             videoResult.message
         }
-        return ExportResult(message, videoResult.shareUri, srtUri)
+        return ExportResult(message, videoResult.shareUri, srtUri, thumbUri)
     }
 
     /** Erzeugt je Szene eine gesprochene Tonspur – vorgefertigte Dateien haben Vorrang. */
@@ -535,7 +614,8 @@ object VideoExporter {
         monoPcm: ByteArray,
         durationUs: Long,
         speechRanges: List<LongRange>,
-        wantMusic: Boolean
+        wantMusic: Boolean,
+        mood: String
     ): ByteArray {
         val frames = monoPcm.size / 2
         if (frames == 0) return ByteArray(0)
@@ -544,7 +624,7 @@ object VideoExporter {
         val lastSpeech = speechRanges.lastOrNull()
         val speechStartSec = if (firstSpeech != null) firstSpeech.first / 1_000_000.0 else totalSec
         val speechEndSec = if (lastSpeech != null) lastSpeech.last / 1_000_000.0 else 0.0
-        val loop = if (wantMusic) buildPadLoop() else null
+        val loop = if (wantMusic) buildPadLoop(mood) else null
         val loopFrames = if (loop != null) loop.size / 2 else 0
         val out = ByteArray(frames * 4)
         for (f in 0 until frames) {
@@ -556,7 +636,8 @@ object VideoExporter {
                 var g = 0.5f
                 if (t < 1.5) g *= (t / 1.5).toFloat()
                 val remain = totalSec - t
-                if (remain < 2.0) g *= (remain / 2.0).coerceAtLeast(0.0).toFloat()
+                // Ausklingen im Outro etwas länger, damit das Video weich endet
+                if (remain < 2.5) g *= (remain / 2.5).coerceAtLeast(0.0).toFloat()
                 // Ducking: Musik wird unter der Sprachausgabe automatisch leiser
                 val ds = speechStartSec - 0.4
                 val de = speechEndSec + 0.4
@@ -582,22 +663,62 @@ object VideoExporter {
     }
 
     /**
-     * Baut einen 16-Sekunden-Ambient-Pad-Loop (A – E – F#m – D), der als dezente
-     * Hintergrundmusik unter der Sprachausgabe läuft. Vollständig im Code erzeugt,
-     * daher lizenzfrei und ohne Zusatzdateien.
+     * Baut den Musik-Loop der gewählten Stimmung – vollständig im Code erzeugt,
+     * daher lizenzfrei und ohne Zusatzdateien:
+     * • „neugierig“ (Standard): 16 s Ambient-Pad (A – E – F#m – D)
+     * • „froehlich“: 16 s fröhliche Dur-Akkordfolge (C – G – Am – F – C – G – F – G)
+     * • „ruhig“: 24 s tiefe, langsame Akkorde (a – F – C – G)
      */
-    private fun buildPadLoop(): FloatArray {
-        val totalSec = 16.0
-        val chordLen = 4.0
-        val overlap = 1.0
+    private fun buildPadLoop(mood: String): FloatArray {
+        val chords: Array<DoubleArray>
+        val totalSec: Double
+        val chordLen: Double
+        val overlap: Double
+        val amp: Double
+        when (mood) {
+            "froehlich" -> {
+                totalSec = 16.0
+                chordLen = 2.0
+                overlap = 0.5
+                amp = 0.24
+                chords = arrayOf(
+                    doubleArrayOf(130.81, 196.0, 261.63, 329.63),   // C
+                    doubleArrayOf(196.0, 246.94, 293.66, 392.0),    // G
+                    doubleArrayOf(220.0, 261.63, 329.63, 440.0),    // Am
+                    doubleArrayOf(174.61, 220.0, 261.63, 349.23),   // F
+                    doubleArrayOf(130.81, 196.0, 261.63, 329.63),   // C
+                    doubleArrayOf(196.0, 246.94, 293.66, 392.0),    // G
+                    doubleArrayOf(174.61, 220.0, 261.63, 349.23),   // F
+                    doubleArrayOf(196.0, 246.94, 293.66, 392.0)     // G
+                )
+            }
+            "ruhig" -> {
+                totalSec = 24.0
+                chordLen = 6.0
+                overlap = 2.0
+                amp = 0.22
+                chords = arrayOf(
+                    doubleArrayOf(110.0, 164.81, 220.0, 277.18),    // a
+                    doubleArrayOf(87.31, 130.81, 174.61, 220.0),    // F
+                    doubleArrayOf(130.81, 196.0, 261.63, 329.63),   // C
+                    doubleArrayOf(98.0, 146.83, 196.0, 246.94)      // G
+                )
+            }
+            else -> {
+                totalSec = 16.0
+                chordLen = 4.0
+                overlap = 1.0
+                amp = 0.30
+                chords = arrayOf(
+                    doubleArrayOf(110.0, 164.81, 220.0, 277.18, 329.63),
+                    doubleArrayOf(123.47, 164.81, 207.65, 246.94, 329.63),
+                    doubleArrayOf(92.5, 138.59, 185.0, 220.0, 277.18),
+                    doubleArrayOf(146.83, 220.0, 293.66, 369.99, 440.0)
+                )
+            }
+        }
         val n = (totalSec * TARGET_RATE).toInt()
         val out = FloatArray(n * 2)
-        val chords = arrayOf(
-            doubleArrayOf(110.0, 164.81, 220.0, 277.18, 329.63),
-            doubleArrayOf(123.47, 164.81, 207.65, 246.94, 329.63),
-            doubleArrayOf(92.5, 138.59, 185.0, 220.0, 277.18),
-            doubleArrayOf(146.83, 220.0, 293.66, 369.99, 440.0)
-        )
         for (c in chords.indices) {
             val startS = c * chordLen
             val dur = if (c == chords.size - 1) chordLen else chordLen + overlap
@@ -615,9 +736,9 @@ object VideoExporter {
                     lv += Math.sin(w * t) * 0.55 + Math.sin(w * 2.0 * t) * 0.18 + Math.sin(w * 3.0 * t) * 0.06
                     rv += Math.sin(w * 1.003 * t) * 0.55 + Math.sin(w * 2.006 * t) * 0.18 + Math.sin(w * 3.009 * t) * 0.06
                 }
-                val amp = env * 0.30 / tones.size
-                out[i * 2] += (lv * amp).toFloat()
-                out[i * 2 + 1] += (rv * amp).toFloat()
+                val a = env * amp / tones.size
+                out[i * 2] += (lv * a).toFloat()
+                out[i * 2 + 1] += (rv * a).toFloat()
             }
         }
         var peak = 0f
@@ -884,14 +1005,38 @@ object VideoExporter {
         val vBuf = vPlane.buffer
         val yRow = yPlane.rowStride
         val yPix = yPlane.pixelStride
-        for (h in 0 until HEIGHT) {
-            for (w in 0 until WIDTH) {
-                val c = argb[h * WIDTH + w]
-                val r = (c shr 16) and 0xff
-                val g = (c shr 8) and 0xff
-                val b = c and 0xff
-                val y = ((66 * r + 129 * g + 25 * b + 128) shr 8) + 16
-                yBuf.put(h * yRow + w * yPix, y.toByte())
+        // Schneller Pfad: Bei dichter Y-Ebene (pixelStride==1) die Zeile im
+        // Speicher aufbauen und blockweise in den Puffer schreiben – das
+        // spart hunderttausende einzelne Puffer-Zugriffe pro Frame.
+        var fastYDone = false
+        if (yPix == 1 && yRow >= WIDTH) {
+            runCatching {
+                val line = ByteArray(WIDTH)
+                for (h in 0 until HEIGHT) {
+                    val rowStart = h * WIDTH
+                    for (w in 0 until WIDTH) {
+                        val c = argb[rowStart + w]
+                        val r = (c shr 16) and 0xff
+                        val g = (c shr 8) and 0xff
+                        val b = c and 0xff
+                        line[w] = (((66 * r + 129 * g + 25 * b + 128) shr 8) + 16).toByte()
+                    }
+                    yBuf.position(h * yRow)
+                    yBuf.put(line, 0, WIDTH)
+                }
+                fastYDone = true
+            }
+        }
+        if (!fastYDone) {
+            for (h in 0 until HEIGHT) {
+                for (w in 0 until WIDTH) {
+                    val c = argb[h * WIDTH + w]
+                    val r = (c shr 16) and 0xff
+                    val g = (c shr 8) and 0xff
+                    val b = c and 0xff
+                    val y = ((66 * r + 129 * g + 25 * b + 128) shr 8) + 16
+                    yBuf.put(h * yRow + w * yPix, y.toByte())
+                }
             }
         }
         val uRow = uPlane.rowStride
@@ -1302,6 +1447,371 @@ object VideoExporter {
         mark.alpha = alpha.coerceIn(0, 255)
         mark.setBounds(left.toInt(), top.toInt(), (left + d).toInt(), (top + d).toInt())
         mark.draw(c)
+    }
+
+    // ---------- Absturz-Schutz: Cache encodierter Spuren ----------
+
+    /** Fertig encodierte Ton- oder Videospur mit den nötigen Zusatzinformationen. */
+    private class TrackCache(
+        val mime: String,
+        val format: MediaFormat,
+        val samples: List<Sample>,
+        val durationUs: Long,
+        val speechRanges: List<LongRange>
+    )
+
+    /** Fasst alle Einflussfaktoren des Videos zu einem Cache-Schlüssel zusammen. */
+    private fun trackCacheHash(
+        slides: List<SlideData>,
+        rate: Float,
+        voiceA: String?,
+        voiceB: String?,
+        preAudio: List<File?>?,
+        burnedSubs: Boolean,
+        music: Boolean,
+        mood: String,
+        width: Int,
+        height: Int
+    ): String {
+        var h = 17
+        for (s in slides) {
+            h = h * 31 + s.title.hashCode()
+            h = h * 31 + s.text.hashCode()
+            h = h * 31 + s.emoji.hashCode()
+            h = h * 31 + (s.photoPath?.hashCode() ?: 0)
+            h = h * 31 + (s.webImagePath?.hashCode() ?: 0)
+        }
+        h = h * 31 + java.lang.Float.floatToIntBits(rate)
+        h = h * 31 + (voiceA ?: "").hashCode()
+        h = h * 31 + (voiceB ?: "").hashCode()
+        h = h * 31 + if (preAudio != null) 1 else 0
+        h = h * 31 + if (burnedSubs) 1 else 0
+        h = h * 31 + if (music) 1 else 0
+        h = h * 31 + mood.hashCode()
+        h = h * 31 + width
+        h = h * 31 + height
+        return Integer.toHexString(h)
+    }
+
+    /** Liest einen optionalen Integer aus einem MediaFormat (0, wenn nicht gesetzt). */
+    private fun fmtInt(format: MediaFormat, key: String): Int =
+        try { format.getInteger(key) } catch (e: Exception) { 0 }
+
+    /** Speichert eine fertig encodierte Spur im App-Cache, damit ein abgebrochener Export fortgesetzt werden kann. */
+    private fun saveTrackCache(file: File, mime: String, format: MediaFormat, samples: List<Sample>, durationUs: Long, speechRanges: List<LongRange>) {
+        runCatching {
+            DataOutputStream(BufferedOutputStream(FileOutputStream(file))).use { w ->
+                w.writeUTF(mime)
+                w.writeInt(fmtInt(format, MediaFormat.KEY_SAMPLE_RATE))
+                w.writeInt(fmtInt(format, MediaFormat.KEY_CHANNEL_COUNT))
+                w.writeInt(fmtInt(format, MediaFormat.KEY_WIDTH))
+                w.writeInt(fmtInt(format, MediaFormat.KEY_HEIGHT))
+                val csd = format.getByteBuffer("csd-0")
+                if (csd != null) {
+                    val dup = csd.duplicate()
+                    val arr = ByteArray(dup.remaining())
+                    dup.get(arr)
+                    w.writeInt(arr.size)
+                    w.write(arr)
+                } else {
+                    w.writeInt(0)
+                }
+                w.writeLong(durationUs)
+                w.writeInt(speechRanges.size)
+                for (r in speechRanges) {
+                    w.writeLong(r.first)
+                    w.writeLong(r.last)
+                }
+                w.writeInt(samples.size)
+                for (s in samples) {
+                    w.writeLong(s.ptsUs)
+                    w.writeInt(s.flags)
+                    w.writeInt(s.data.size)
+                    w.write(s.data)
+                }
+            }
+        }
+    }
+
+    /** Lädt eine gecachte Spur – null, wenn keine gültige Cache-Datei existiert. */
+    private fun loadTrackCache(file: File?): TrackCache? {
+        if (file == null || !file.exists() || file.length() == 0L) return null
+        return runCatching {
+            DataInputStream(BufferedInputStream(FileInputStream(file))).use { r ->
+                val mime = r.readUTF()
+                val sampleRate = r.readInt()
+                val channels = r.readInt()
+                val width = r.readInt()
+                val height = r.readInt()
+                val csdLen = r.readInt()
+                val csd = if (csdLen > 0) ByteArray(csdLen).also { r.readFully(it) } else null
+                val durationUs = r.readLong()
+                val rangeCount = r.readInt()
+                val ranges = mutableListOf<LongRange>()
+                repeat(rangeCount) { ranges.add(r.readLong() until r.readLong()) }
+                val sampleCount = r.readInt()
+                val samples = mutableListOf<Sample>()
+                repeat(sampleCount) {
+                    val pts = r.readLong()
+                    val flags = r.readInt()
+                    val arr = ByteArray(r.readInt())
+                    r.readFully(arr)
+                    samples.add(Sample(arr, pts, flags))
+                }
+                val format = if (mime == MediaFormat.MIMETYPE_VIDEO_AVC) {
+                    MediaFormat.createVideoFormat(mime, width, height).apply {
+                        setInteger(MediaFormat.KEY_BIT_RATE, width * height * 3)
+                        setInteger(MediaFormat.KEY_FRAME_RATE, 24)
+                        setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    }
+                } else {
+                    MediaFormat.createAudioFormat(mime, sampleRate, channels).apply {
+                        setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+                        setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 32768)
+                    }
+                }
+                if (csd != null) format.setByteBuffer("csd-0", ByteBuffer.wrap(csd))
+                TrackCache(mime, format, samples, durationUs, ranges)
+            }
+        }.getOrNull()
+    }
+
+    // ---------- Lautheits-Normalisierung (ITU-R BS.1770, Ziel −14 LUFS) ----------
+
+    /** Ein Biquad-Filter (normalisierte Koeffizienten). */
+    private class Biquad(b0: Double, b1: Double, b2: Double, a0: Double, a1: Double, a2: Double) {
+        private val b0n = b0 / a0
+        private val b1n = b1 / a0
+        private val b2n = b2 / a0
+        private val a1n = a1 / a0
+        private val a2n = a2 / a0
+        private var z1 = 0.0
+        private var z2 = 0.0
+        fun process(x: Double): Double {
+            val y = b0n * x + z1
+            z1 = b1n * x - a1n * y + z2
+            z2 = b2n * x - a2n * y
+            return y
+        }
+    }
+
+    /** K-Gewichtung Stufe 1: Hochregal wie im BS.1770-Messfilter. */
+    private fun highShelf(f0: Double, gainDb: Double, q: Double, fs: Int): Biquad {
+        val w0 = 2.0 * Math.PI * f0 / fs
+        val cw = Math.cos(w0)
+        val sw = Math.sin(w0)
+        val alpha = sw / (2.0 * q)
+        val a = Math.pow(10.0, gainDb / 40.0)
+        val sq = Math.sqrt(a) * alpha
+        return Biquad(
+            a * ((a + 1.0) + (a - 1.0) * cw + 2.0 * sq),
+            -2.0 * a * ((a - 1.0) + (a + 1.0) * cw),
+            a * ((a + 1.0) + (a - 1.0) * cw - 2.0 * sq),
+            (a + 1.0) + (a - 1.0) * cw + 2.0 * sq,
+            -2.0 * ((a - 1.0) + (a + 1.0) * cw),
+            (a + 1.0) + (a - 1.0) * cw - 2.0 * sq
+        )
+    }
+
+    /** K-Gewichtung Stufe 2: Hochpass wie im BS.1770-Messfilter. */
+    private fun highPass(f0: Double, q: Double, fs: Int): Biquad {
+        val w0 = 2.0 * Math.PI * f0 / fs
+        val cw = Math.cos(w0)
+        val sw = Math.sin(w0)
+        val alpha = sw / (2.0 * q)
+        return Biquad(
+            (1.0 + cw) / 2.0,
+            -(1.0 + cw),
+            (1.0 + cw) / 2.0,
+            1.0 + alpha,
+            -2.0 * cw,
+            1.0 - alpha
+        )
+    }
+
+    /**
+     * Normalisiert das gemischte Stereo-PCM auf −14 LUFS (ITU-R BS.1770-4 mit
+     * 400-ms-Blöcken, 100-ms-Versatz und absoluter/relativer Gate-Schwelle) –
+     * der Lautstärke-Standard von YouTube: Stimme und Musik klingen so über
+     * alle Videos und Geräte hinweg konsistent laut.
+     */
+    private fun normalizeLoudness(pcm: ByteArray): ByteArray {
+        val frames = pcm.size / 4
+        if (frames < TARGET_RATE) return pcm // unter 1 s: nichts sinnvoll messbar
+        return runCatching {
+            val shelfL = highShelf(1681.9741891, 3.99984385397, 0.7071752369554196, TARGET_RATE)
+            val hpfL = highPass(38.1354708760244, 0.5003270373238773, TARGET_RATE)
+            val shelfR = highShelf(1681.9741891, 3.99984385397, 0.7071752369554196, TARGET_RATE)
+            val hpfR = highPass(38.1354708760244, 0.5003270373238773, TARGET_RATE)
+            val blockLen = TARGET_RATE * 2 / 5 // 400 ms
+            val hopLen = TARGET_RATE / 10       // 100 ms
+            val ringL = DoubleArray(blockLen)
+            val ringR = DoubleArray(blockLen)
+            var sumL = 0.0
+            var sumR = 0.0
+            var ringPos = 0
+            var filled = 0
+            val blocks = mutableListOf<DoubleArray>()
+            for (f in 0 until frames) {
+                val l = (((pcm[f * 4].toInt() and 0xff) or ((pcm[f * 4 + 1].toInt() and 0xff) shl 8)).toShort()).toDouble()
+                val r = (((pcm[f * 4 + 2].toInt() and 0xff) or ((pcm[f * 4 + 3].toInt() and 0xff) shl 8)).toShort()).toDouble()
+                val fl = hpfL.process(shelfL.process(l))
+                val fr = hpfR.process(shelfR.process(r))
+                sumL += fl - ringL[ringPos]
+                sumR += fr - ringR[ringPos]
+                ringL[ringPos] = fl
+                ringR[ringPos] = fr
+                ringPos = (ringPos + 1) % blockLen
+                filled++
+                if (filled >= blockLen && (filled - blockLen) % hopLen == 0) {
+                    blocks.add(doubleArrayOf(sumL / blockLen, sumR / blockLen))
+                }
+            }
+            if (blocks.isEmpty()) return pcm
+            fun blockLufs(z: DoubleArray): Double =
+                -0.691 + 10.0 * Math.log10((z[0] + z[1]).coerceAtLeast(1e-12))
+            val absGated = blocks.filter { blockLufs(it) > -70.0 }
+            if (absGated.isEmpty()) return pcm
+            val ungated = -0.691 + 10.0 * Math.log10(
+                (absGated.sumOf { it[0] + it[1] } / absGated.size).coerceAtLeast(1e-12)
+            )
+            val relGated = absGated.filter { blockLufs(it) > ungated - 10.0 }
+            val pool = if (relGated.isNotEmpty()) relGated else absGated
+            val lufs = -0.691 + 10.0 * Math.log10(
+                (pool.sumOf { it[0] + it[1] } / pool.size).coerceAtLeast(1e-12)
+            )
+            var gain = Math.pow(10.0, (-14.0 - lufs) / 20.0).coerceIn(0.1, 10.0)
+            // Clip-Schutz: nie über die 16-Bit-Vollaussteuerung hinaus verstärken
+            var peak = 0.0
+            for (f in 0 until frames) {
+                val l = abs((((pcm[f * 4].toInt() and 0xff) or ((pcm[f * 4 + 1].toInt() and 0xff) shl 8)).toShort()).toDouble())
+                val r = abs((((pcm[f * 4 + 2].toInt() and 0xff) or ((pcm[f * 4 + 3].toInt() and 0xff) shl 8)).toShort()).toDouble())
+                if (l > peak) peak = l
+                if (r > peak) peak = r
+            }
+            if (peak > 0.0 && peak * gain > 32000.0) gain = 32000.0 / peak
+            if (Math.abs(gain - 1.0) < 0.015) return pcm
+            val out = ByteArray(pcm.size)
+            for (f in 0 until frames) {
+                val l = ((((pcm[f * 4].toInt() and 0xff) or ((pcm[f * 4 + 1].toInt() and 0xff) shl 8)).toShort()).toDouble() * gain).toInt().coerceIn(-32767, 32767)
+                val r = ((((pcm[f * 4 + 2].toInt() and 0xff) or ((pcm[f * 4 + 3].toInt() and 0xff) shl 8)).toShort()).toDouble() * gain).toInt().coerceIn(-32767, 32767)
+                out[f * 4] = (l and 0xff).toByte()
+                out[f * 4 + 1] = ((l shr 8) and 0xff).toByte()
+                out[f * 4 + 2] = (r and 0xff).toByte()
+                out[f * 4 + 3] = ((r shr 8) and 0xff).toByte()
+            }
+            out
+        }.getOrDefault(pcm)
+    }
+
+    // ---------- Automatisches Video-Cover (Thumbnail) ----------
+
+    /** Rendert das Video-Cover (JPEG-Thumbnail für YouTube/TikTok) für die erste Szene. */
+    private fun renderCover(slide: SlideData): Bitmap {
+        val bmp = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val colors = palettes[0]
+        val bg = Paint()
+        bg.shader = LinearGradient(0f, 0f, 0f, HEIGHT.toFloat(), colors[0], colors[1], Shader.TileMode.CLAMP)
+        c.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bg)
+        val vignette = Paint()
+        vignette.shader = RadialGradient(
+            WIDTH / 2f, HEIGHT / 2f, maxOf(WIDTH, HEIGHT) * 0.75f,
+            intArrayOf(Color.TRANSPARENT, Color.argb(70, 0, 0, 0)),
+            floatArrayOf(0.55f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        c.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), vignette)
+        val logo = logoMark
+        if (logo != null) drawLogoMark(c, logo, WIDTH / 2f, HEIGHT * 0.09f, 130f * scale, 255)
+        // Themen-Foto (Kamerafoto oder Online-Bild) in gerundeter Karte
+        val photoPath = slide.photoPath ?: slide.webImagePath
+        val photo = if (photoPath != null) runCatching { BitmapFactory.decodeFile(photoPath) }.getOrNull() else null
+        if (photo != null) {
+            val card = RectF(60f * scale, HEIGHT * 0.14f, WIDTH - 60f * scale, HEIGHT * 0.56f)
+            val frame = RectF(
+                card.left - 8f * scale, card.top - 8f * scale,
+                card.right + 8f * scale, card.bottom + 8f * scale
+            )
+            val shadow = Paint(Paint.ANTI_ALIAS_FLAG)
+            shadow.color = Color.argb(70, 0, 0, 0)
+            c.drawRoundRect(frame, 26f * scale, 26f * scale, shadow)
+            c.save()
+            val clip = Path()
+            clip.addRoundRect(card, 24f * scale, 24f * scale, Path.Direction.CW)
+            c.clipPath(clip)
+            drawCenterCrop(c, photo, card)
+            c.restore()
+            photo.recycle()
+        }
+        // Thema als großer Titel mit automatischer Verkleinerung
+        val title = slide.text.trim().take(110).ifBlank { "Dein Erklärvideo" }
+        var size = 60f * scale
+        var layout = buildCoverLayout(title, size)
+        while (layout.height > HEIGHT * 0.20f && size > 32f * scale) {
+            size -= 6f * scale
+            layout = buildCoverLayout(title, size)
+        }
+        c.save()
+        c.translate((WIDTH - layout.width) / 2f, HEIGHT * 0.60f)
+        layout.draw(c)
+        c.restore()
+        // Zweifarbige Wortmarke unten
+        val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        tp.textSize = 62f * scale
+        tp.isFakeBoldText = true
+        tp.setShadowLayer(5f * scale, 0f, 2f * scale, Color.argb(140, 0, 0, 0))
+        val s1 = "Wer "
+        val s2 = "Wie"
+        val s3 = " Was"
+        val total = tp.measureText(s1) + tp.measureText(s2) + tp.measureText(s3)
+        var x = WIDTH / 2f - total / 2f
+        val y = HEIGHT * 0.88f
+        tp.color = Color.WHITE
+        c.drawText(s1, x, y, tp)
+        x += tp.measureText(s1)
+        tp.color = Color.rgb(66, 133, 244)
+        c.drawText(s2, x, y, tp)
+        x += tp.measureText(s2)
+        tp.color = Color.WHITE
+        c.drawText(s3, x, y, tp)
+        return bmp
+    }
+
+    /** Titel-Layout für das Video-Cover (zentriert, mit Schatten für Lesbarkeit). */
+    private fun buildCoverLayout(text: String, size: Float): StaticLayout {
+        val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        tp.textSize = size
+        tp.isFakeBoldText = true
+        tp.color = Color.WHITE
+        tp.setShadowLayer(4f * scale, 0f, 2f * scale, Color.argb(140, 0, 0, 0))
+        return StaticLayout.Builder.obtain(
+            text, 0, text.length, tp, (WIDTH - 140f * scale).toInt()
+        ).setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(0f, 1.15f).build()
+    }
+
+    /** Speichert das Cover als JPEG in der Galerie (ab Android 10) bzw. im App-Ordner. */
+    private fun saveThumb(context: Context, videoBase: String, slide: SlideData): Uri? {
+        val bmp = renderCover(slide)
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, videoBase + "_cover.jpg")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/WerWieWas")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            if (uri != null) {
+                context.contentResolver.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+            }
+            bmp.recycle()
+            return uri
+        }
+        val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir, "videos")
+        dir.mkdirs()
+        val target = File(dir, videoBase + "_cover.jpg")
+        FileOutputStream(target).use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+        bmp.recycle()
+        return FileProvider.getUriForFile(context, context.packageName + ".fileprovider", target)
     }
 
     /** Zeichnet eine Bitmap formatfüllend und mittig beschnitten in ein Zielrechteck. */
