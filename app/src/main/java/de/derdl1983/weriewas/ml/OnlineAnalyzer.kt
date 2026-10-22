@@ -157,8 +157,30 @@ object OnlineAnalyzer {
             "freund" -> sb.append("Erzähle so, wie dein bester Freund beim Kaffee erzählen würde: locker, persönlich mit „du“, Alltagsbeispielen und echtem Enthusiasmus.\n")
         }
         when (profile.audience) {
-            "kind" -> sb.append("Zielgruppe: Kinder von 8 bis 12 Jahren. Nutze kurze, einfache Sätze und viele Alltagsbeispiele.\n")
-            "jugend" -> sb.append("Zielgruppe: Jugendliche. Sprich locker und informativ.\n")
+            "kind" -> sb.append(
+                "Zielgruppe: Kinder von 8 bis 12 Jahren. Erzähle, wie man es einem " +
+                    "neugierigen Kind erklärt, das zum ersten Mal davon hört: kurze, " +
+                    "einfache Sätze mit einem Gedanken pro Satz, begeistert und voller " +
+                    "Neugier, viele vertraute Dinge aus dem Alltag des Kindes als " +
+                    "Beispiele (Schule, Spielen, Sport, Haustiere, Frühstückstisch). " +
+                    "Nutze liebevolle, kindgerechte Vergleiche, damit sich das Kind " +
+                    "das Objekt richtig vorstellen kann, und erkläre jeden Fachbegriff " +
+                    "sofort in Kinderworten. Baue zwischendurch eine kleine Ratefrage " +
+                    "ein („Rate mal, wofür das gut ist!“) und sprich das Kind direkt " +
+                    "und ermutigend an. Wirke warm und geduldig – niemals belehrend, " +
+                    "herablassend oder wie ein Babybuch.\n"
+            )
+            "jugend" -> sb.append(
+                "Zielgruppe: Jugendliche. Erzähle wie der coolste Typ aus dem " +
+                    "Freundeskreis, der sein Zeug einfach draufhat: locker und direkt " +
+                    "mit „du“, prägnant ohne Gelaber und mit echtem Enthusiasmus " +
+                    "statt Belehrung. Nutze Beispiele aus der Welt von Schule, Social " +
+                    "Media, Gaming und Alltag und erkläre kurz, warum das Objekt " +
+                    "relevant ist („Das benutzt du täglich, ohne es zu merken“). " +
+                    "Vermeide krampfigen Jugend-Slang und Moralpredigten – bleib " +
+                    "authentisch und auf Augenhöhe. Fakten bleiben trotzdem sauber " +
+                    "korrekt, und bei Sicherheitshinweisen wird ernst gewarnt.\n"
+            )
             "senior" -> sb.append(
                 "Zielgruppe: Senioren. Erkläre, wie man es einem alten, etwas " +
                     "vergesslichen Herrn erklärt, dem man Zeit und Geduld schenkt: " +
@@ -172,7 +194,17 @@ object OnlineAnalyzer {
                     "Pause nichts verloren geht. Wirke warm und ermutigend – " +
                     "niemals bevormundend oder kindisch.\n"
             )
-            else -> sb.append("Zielgruppe: Erwachsene.\n")
+            else -> sb.append(
+                "Zielgruppe: Erwachsene. Erzähle auf Augenhöhe: klar strukturiert " +
+                    "mit einem Gedanken pro Satz, konzentriert auf das Wesentliche " +
+                    "und ohne Umwege. Nutze greifbare Alltagsbeispiele aus Beruf, " +
+                    "Haushalt, Hobby oder Technik, erkläre Zusammenhänge so, dass " +
+                    "man sie beim Zuhören sofort versteht, und verzichte auf " +
+                    "Belehrungen und Floskeln. Nenne Zahlen und Größen, wo sie " +
+                    "helfen, und erkläre Fachbegriffe kurz, statt sie umständlich " +
+                    "zu umschreiben. Wirke freundlich, respektvoll und nah am " +
+                    "echten Leben.\n"
+            )
         }
         when (profile.level) {
             "fortgeschritten" -> sb.append("Vorwissen: fortgeschritten. Du darfst Fachbegriffe verwenden und erklärst sie kurz.\n")
