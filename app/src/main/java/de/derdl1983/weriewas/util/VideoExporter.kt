@@ -102,8 +102,10 @@ object VideoExporter {
     private const val TARGET_RATE = 44100       // Studio-Audioqualität
     private const val CHANNELS = 2              // Stereo
     private const val SILENCE_SECONDS = 0.6
-    private const val FADE_SECONDS = 0.6        // Dauer der Szenen-Überblendung
-    private const val INTRO_SECONDS = 2.8
+    private const val FADE_SECONDS = 0.6        // Dauer der Weichblenden (Karte/Foto/Szene)
+    private const val INTRO_SECONDS = 6.0       // Längeres Intro: Marken-Karte, dann Ausgangsbild
+    private const val INTRO_CARD_SECONDS = 2.4  // Dauer der Marken-Karte vor dem Ausgangsbild
+    private const val TRANS_SECONDS = 0.9       // Foto-Übergangs-Clip zwischen zwei Szenen
     private const val OUTRO_SECONDS = 2.2
     private const val TEXT_FADE_SECONDS = 0.5f  // Titel/Text blenden pro Szene ein
     private const val ZOOM_AMOUNT = 0.08f      // Ken-Burns-Zoomstärke auf Fotos
@@ -164,9 +166,10 @@ object VideoExporter {
         WIDTH = videoWidth
         HEIGHT = videoHeight
         scale = minOf(WIDTH, HEIGHT) / 720f
-        // Echte App-Logo-Marke (gleicher Vektor wie das Launcher-Icon) für
-        // Intro-/Outro-Karte und Wasserzeichen laden.
-        logoMark = context.getDrawable(R.drawable.ic_launcher_foreground)
+        // Video-Logo-Marke: gleiche Geometrie wie das Launcher-Icon, aber mit
+        // weißer Kamera/Lupe – die dunkle Launcher-Variante war auf dem
+        // dunkelblauen Video-Hintergrund praktisch unsichtbar.
+        logoMark = context.getDrawable(R.drawable.ic_video_logo)
         onProgress(0.02f)
         // Absturz-Schutz: Fertig encodierte Ton-/Videospuren werden im App-Cache
         // abgelegt. Bricht der Export (oder die App) mitten ab, läuft der nächste
@@ -213,11 +216,18 @@ object VideoExporter {
         val outroUs = (OUTRO_SECONDS * 1_000_000).toLong()
         val fadeUs = (FADE_SECONDS * 1_000_000).toLong()
         val silenceUs = (SILENCE_SECONDS * 1_000_000).toLong()
+        val transUs = (TRANS_SECONDS * 1_000_000).toLong()
 
         val audios = synthesizeSlides(context, slides, voiceA, voiceB, rate, preAudio, speechLang) { p ->
             onProgress(0.05f + 0.25f * p.coerceIn(0f, 1f))
         }
         onProgress(0.30f)
+        // Sicherheitsnetz: Wenn TTS-Dateien vorlagen, aber am Ende gar keine
+        // Szene eine gültige Tonspur hat (z. B. Netzwerkfehler bei Edge-TTS),
+        // brechen wir sauber ab, statt ein stummes Video zu erzeugen.
+        if (preAudio != null && preAudio.any { it != null } && audios.all { it.pcm.isEmpty() }) {
+            throw ExportException("Sprachsynthese fehlgeschlagen – bitte Internetverbindung prüfen und den Export erneut starten.")
+        }
 
         // Ton-Zeitlinie: Intro-Pause, dann je Szene Sprachausgabe + Anzeige-Pause, dann Outro-Pause.
         // Jede Szene bekommt eine Mindest-Anzeigedauer nach Textlänge, damit der komplette
@@ -238,12 +248,19 @@ object VideoExporter {
             val padUs = maxOf(silenceUs, estimateUs - monoUs)
             pcmOut.write(mono)
             sceneStart[i] = cursor
-            sceneDur[i] = monoUs + padUs + fadeUs / 2
+            sceneDur[i] = monoUs + padUs
             sceneSpans.add(cursor until (cursor + sceneDur[i]))
             if (slides[i].emoji.contains("⚠")) warnSpans.add(cursor until (cursor + sceneDur[i]))
             if (monoUs > 0) speechRanges.add(cursor until (cursor + monoUs))
             cursor += monoUs + padUs
             pcmOut.write(ByteArray((padUs * TARGET_RATE * 2L / 1_000_000L).toInt()))
+            // Zwischen den Szenen einen kurzen Foto-Übergangs-Clip einfügen
+            // (Vollbild-Foto der nächsten Szene mit Ken-Burns-Zoom). Die Stille
+            // hier verlängert die Ton-Zeitlinie im gleichen Takt.
+            if (i < audios.size - 1) {
+                pcmOut.write(ByteArray((transUs * TARGET_RATE * 2L / 1_000_000L).toInt()))
+                cursor += transUs
+            }
         }
         pcmOut.write(ByteArray((OUTRO_SECONDS * TARGET_RATE * 2).toInt()))
         val durationUs = cursor + outroUs
@@ -277,7 +294,7 @@ object VideoExporter {
         // Eingebrannte Untertitel laufen über das komplette Anzeige-Fenster der Szene.
         val gfx = try {
             slides.mapIndexed { i, s ->
-                val g = renderSlideGfx(s, i, slides.size, burnedSubs, sceneDur[i] - fadeUs / 2)
+                val g = renderSlideGfx(s, i, slides.size, burnedSubs, sceneDur[i])
                 onProgress(0.35f + 0.10f * (i + 1f) / slides.size)
                 g
             }
@@ -286,6 +303,9 @@ object VideoExporter {
         } catch (e: Exception) {
             throw ExportException("Szenen konnten nicht vorbereitet werden: " + (e.message ?: e.javaClass.simpleName))
         }
+        // Fotos für das Intro (Ausgangsbild) und die Übergangs-Clips in
+        // Vollbild-Qualität – unabhängig von den kleineren Szenen-Bildern.
+        val fullPhotos = slides.map { decodeFullscreen(it.photoPath ?: it.webImagePath) }
         // Frame-Renderer: Intro-Karte, Überblendungen, Ken-Burns-Zoom, Outro-Karte
         val bmpA = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
         val cA = Canvas(bmpA)
@@ -320,6 +340,26 @@ object VideoExporter {
             0f, 0f, 0f, HEIGHT.toFloat(),
             0xFF0A1633.toInt(), 0xFF1A50A8.toInt(), Shader.TileMode.CLAMP
         )
+        // Bausteine für Intro-/Übergangs-Clips: Palette-Verläufe je Szene
+        // (Fallback, wenn kein Foto da ist), Vignette und Emoji-/Wortmarken.
+        val transBgPaints = palettes.map { colors ->
+            Paint().apply {
+                shader = LinearGradient(0f, 0f, 0f, HEIGHT.toFloat(), colors[0], colors[1], Shader.TileMode.CLAMP)
+            }
+        }
+        val transVignettePaint = Paint()
+        transVignettePaint.shader = RadialGradient(
+            WIDTH / 2f, HEIGHT / 2f, maxOf(WIDTH, HEIGHT) * 0.75f,
+            intArrayOf(Color.TRANSPARENT, Color.argb(95, 0, 0, 0)),
+            floatArrayOf(0.55f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        val transEmojiPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 230f * scale
+            textAlign = Paint.Align.CENTER
+            color = Color.argb(240, 255, 255, 255)
+            setShadowLayer(6f * scale, 0f, 3f * scale, Color.argb(120, 0, 0, 0))
+        }
         val outroTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         outroTextPaint.textAlign = Paint.Align.CENTER
         outroTextPaint.textSize = 36f * scale
@@ -442,6 +482,51 @@ object VideoExporter {
             }
         }
 
+        /** Zeichnet eine Bitmap formatfüllend, mittig beschnitten und mit Zoom-Faktor. */
+        fun drawFullscreen(c: Canvas, bmp: Bitmap, zoom: Float) {
+            val s = maxOf(WIDTH.toFloat() / bmp.width, HEIGHT.toFloat() / bmp.height) * zoom
+            val m = Matrix()
+            m.postScale(s, s)
+            m.postTranslate((WIDTH - bmp.width * s) / 2f, (HEIGHT - bmp.height * s) / 2f)
+            c.drawBitmap(bmp, m, photoPaint)
+        }
+
+        /** Intro-Phase 2: Das Ausgangsbild der Entdeckung als Vollbild mit
+         *  langsamem Ken-Burns-Zoom und dezenter Wortmarke. */
+        fun drawIntroPhoto(c: Canvas, t: Long) {
+            val p = fullPhotos.firstOrNull()
+            if (p == null) {
+                // Kein Foto vorhanden: Marken-Karte bleibt stehen
+                drawCard(c, t, 0L, true)
+
+                return
+            }
+            val f = (t.toFloat() / introUs.toFloat()).coerceIn(0f, 1f)
+            drawFullscreen(c, p, 1.05f + 0.07f * f)
+            c.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), transVignettePaint)
+            drawWordmark(c, HEIGHT * 0.90f, 52f * scale, 215)
+            drawProgress(c, t)
+        }
+
+        /** Übergangs-Clip zwischen Szene seg und seg+1: Vollbild-Foto der
+         *  nächsten Szene mit Ken-Burns-Zoom – ohne Foto Palette-Verlauf mit
+         *  großem Emoji. */
+        fun drawTransitionBase(c: Canvas, seg: Int, t: Long) {
+            val next = seg + 1
+            val f = ((t - sceneStart[seg] - sceneDur[seg]).toFloat() / transUs.toFloat()).coerceIn(0f, 1f)
+            val p = fullPhotos.getOrNull(next)
+            if (p != null) {
+                drawFullscreen(c, p, 1.10f - 0.08f * f)
+                c.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), transVignettePaint)
+            } else {
+                c.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), transBgPaints[next % transBgPaints.size])
+                val emoji = slides[next].emoji.ifBlank { "✨" }
+                val fm = transEmojiPaint.fontMetrics
+                c.drawText(emoji, WIDTH / 2f, HEIGHT / 2f - (fm.top + fm.bottom) / 2f, transEmojiPaint)
+            }
+            drawProgress(c, t)
+        }
+
         fun fadeToBlack(arr: IntArray, f: Float) {
             val ib = 256 - (f.coerceIn(0f, 1f) * 256f).toInt()
             for (i in arr.indices) {
@@ -456,13 +541,28 @@ object VideoExporter {
         fun renderFrame(t: Long): IntArray {
             val half = fadeUs / 2
             val outroStart = durationUs - outroUs
-            if (t < introUs - half) {
+            val introCardUs = (INTRO_CARD_SECONDS * 1_000_000).toLong()
+            // Intro: erst die Marken-Karte, dann weich zum Vollbild-Ausgangsbild
+            if (t < introCardUs - half) {
                 drawCard(cA, t, 0L, true)
                 bmpA.getPixels(out, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
                 return out
             }
-            if (t < introUs + half) {
+            if (t < introCardUs + half) {
                 drawCard(cA, t, 0L, true)
+                bmpA.getPixels(arrA, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                drawIntroPhoto(cB, t)
+                bmpB.getPixels(arrB, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                blend(arrA, arrB, (t - (introCardUs - half)).toFloat() / fadeUs.toFloat(), out)
+                return out
+            }
+            if (t < introUs - half) {
+                drawIntroPhoto(cA, t)
+                bmpA.getPixels(out, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                return out
+            }
+            if (t < introUs + half) {
+                drawIntroPhoto(cA, t)
                 bmpA.getPixels(arrA, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
                 drawScene(cB, 0, t)
                 bmpB.getPixels(arrB, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
@@ -486,13 +586,27 @@ object VideoExporter {
             }
             var seg = 0
             for (i in sceneStart.indices) if (t >= sceneStart[i]) seg = i
-            val nextB = if (seg + 1 < slides.size) sceneStart[seg + 1] else Long.MAX_VALUE
-            if (t >= nextB - half) {
-                drawScene(cA, seg, t)
-                bmpA.getPixels(arrA, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
-                drawScene(cB, seg + 1, t)
-                bmpB.getPixels(arrB, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
-                blend(arrA, arrB, (t - (nextB - half)).toFloat() / fadeUs.toFloat(), out)
+            val sceneEnd = sceneStart[seg] + sceneDur[seg]
+            if (seg < slides.size - 1 && t >= sceneEnd) {
+                // Foto-Übergangs-Clip: weich aus Szene seg hinein- und in
+                // Szene seg+1 wieder herausgeblendet (flüssiger Szenenwechsel)
+                val f = ((t - sceneEnd).toFloat() / transUs.toFloat()).coerceIn(0f, 1f)
+                if (f < 0.3f) {
+                    drawScene(cA, seg, t)
+                    bmpA.getPixels(arrA, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                    drawTransitionBase(cB, seg, t)
+                    bmpB.getPixels(arrB, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                    blend(arrA, arrB, f / 0.3f, out)
+                } else if (f > 0.7f) {
+                    drawTransitionBase(cA, seg, t)
+                    bmpA.getPixels(arrA, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                    drawScene(cB, seg + 1, t)
+                    bmpB.getPixels(arrB, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                    blend(arrA, arrB, (f - 0.7f) / 0.3f, out)
+                } else {
+                    drawTransitionBase(cA, seg, t)
+                    bmpA.getPixels(out, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
+                }
                 return out
             }
             drawScene(cA, seg, t)
@@ -551,26 +665,33 @@ object VideoExporter {
         progress: (Float) -> Unit = { }
     ): List<SlideAudio> {
         val provided: List<File?> = slides.mapIndexed { i, _ -> preAudio?.getOrNull(i) }
-        if (provided.isNotEmpty() && provided.all { it != null }) {
-            progress(1f)
-            return provided.map { f ->
-                if (f == null) {
-                    SlideAudio(ByteArray(0), TARGET_RATE, 1)
-                } else {
-                    runCatching { parseWav(f) }.getOrElse { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
-                }
+        // Vorhandene TTS-Dateien vorab lesen. null = Datei fehlt, ist defekt
+        // oder enthält keine Daten – diese Szenen werden später über die
+        // Android-Sprachausgabe synthetisiert, statt stumm zu bleiben.
+        val preParsed: List<SlideAudio?>? = if (provided.any { it != null }) {
+            val parsed = provided.map { f ->
+                if (f == null) null
+                else runCatching { parseWav(f) }.getOrNull()?.takeIf { it.pcm.isNotEmpty() }
             }
-        }
+            if (parsed.all { it != null }) {
+                // Alle Szenen haben fertige, gültige Tonspuren
+                progress(1f)
+                return parsed.map { it as SlideAudio }
+            }
+            parsed
+        } else null
         val initLatch = CountDownLatch(1)
         val tts = TextToSpeech(context.applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) initLatch.countDown()
         }
         try {
             if (!initLatch.await(15, TimeUnit.SECONDS)) {
-                // Keine Sprachausgabe verfügbar: Das Video wird ohne Ton exportiert
-                // (jede Szene erhält nur die kurze Sprechpause als Dauer).
+                // Keine Sprachausgabe verfügbar: bereits gelesene Vorlagen-Dateien
+                // nutzen, fehlende Szenen bleiben ohne Ton (nur Sprechpause).
                 progress(1f)
-                return slides.map { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
+                return slides.mapIndexed { i, _ ->
+                    preParsed?.getOrNull(i) ?: SlideAudio(ByteArray(0), TARGET_RATE, 1)
+                }
             }
             // Sprache der System-Sprachausgabe folgt der Antwort-Sprache des
             // KI-Profils (Standard Deutsch).
@@ -578,12 +699,9 @@ object VideoExporter {
             tts.setSpeechRate(rate)
             val result = mutableListOf<SlideAudio>()
             for ((index, slide) in slides.withIndex()) {
-                val pre = provided.getOrNull(index)
+                val pre = preParsed?.getOrNull(index)
                 if (pre != null) {
-                    result.add(
-                        runCatching { parseWav(pre) }
-                            .getOrElse { SlideAudio(ByteArray(0), TARGET_RATE, 1) }
-                    )
+                    result.add(pre)
                     continue
                 }
                 val voice = if (index % 2 == 1) (voiceB ?: voiceA) else voiceA
@@ -881,6 +999,7 @@ object VideoExporter {
                                 offset += n
                             } else {
                                 inputDone = true
+
                             }
                         }
                     }
@@ -1381,6 +1500,7 @@ object VideoExporter {
         vignette.shader = RadialGradient(
             WIDTH / 2f, HEIGHT / 2f, maxOf(WIDTH, HEIGHT) * 0.75f,
             intArrayOf(Color.TRANSPARENT, Color.argb(70, 0, 0, 0)),
+
             floatArrayOf(0.55f, 1f),
             Shader.TileMode.CLAMP
         )
@@ -1693,10 +1813,11 @@ object VideoExporter {
         speechLang: String = "de"
     ): String {
         var h = 17
-        // Cache-Format-Version: SRT nutzt jetzt Szenen-Spannen (eine pro
-        // Szene, inklusive Pausen) statt reiner Sprech-Spannen – alte Caches
-        // mit der bisherigen Bedeutung werden dadurch sicher verworfen.
-        h = h * 31 + 2
+        // Cache-Format-Version 3: Intro-Ausgangsbild und Foto-Übergangs-Clips
+        // ändern das Timing komplett, und Pre-Audio-Dateien fließen jetzt mit
+        // Größe + Änderungsdatum in den Schlüssel ein – alte (ggf. stumme)
+        // Tonspuren werden dadurch sicher verworfen.
+        h = h * 31 + 3
         for (s in slides) {
             h = h * 31 + s.title.hashCode()
             h = h * 31 + s.text.hashCode()
@@ -1712,6 +1833,11 @@ object VideoExporter {
         // nach einem Zielgruppen- oder Stimmwechsel sicher verworfen.
         for (p in (preAudio ?: emptyList())) {
             h = h * 31 + (p?.name?.hashCode() ?: 0)
+            // Größe + Änderungsdatum: Eine leere oder defekte TTS-Datei (z. B.
+            // nach einem Netzwerkfehler) darf nie denselben Schlüssel liefern
+            // wie eine später korrekt erzeugte – sonst bliebe der Ton für immer weg.
+            h = h * 31 + (p?.length()?.hashCode() ?: 0)
+            h = h * 31 + (p?.lastModified()?.hashCode() ?: 0)
         }
         h = h * 31 + if (burnedSubs) 1 else 0
         h = h * 31 + if (music) 1 else 0
@@ -1875,6 +2001,7 @@ object VideoExporter {
             val blockLen = TARGET_RATE * 2 / 5 // 400 ms
             val hopLen = TARGET_RATE / 10       // 100 ms
             val ringL = DoubleArray(blockLen)
+
             val ringR = DoubleArray(blockLen)
             var sumL = 0.0
             var sumR = 0.0
@@ -2057,6 +2184,22 @@ object VideoExporter {
         canvas.drawBitmap(bmp, matrix, paint)
         canvas.restore()
     }
+
+    /** Dekodiert ein Foto in Vollbild-Qualität (maximal Zielgröße) für das
+     *  Intro-Ausgangsbild und die Übergangs-Clips; null, wenn kein Foto da ist. */
+    private fun decodeFullscreen(path: String?): Bitmap? {
+        if (path.isNullOrBlank()) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        if (runCatching { BitmapFactory.decodeFile(path, bounds) }.getOrNull() == null) return null
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val target = maxOf(WIDTH, HEIGHT)
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= target && bounds.outHeight / (sample * 2) >= target) sample *= 2
+        return runCatching {
+            BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+        }.getOrNull()
+    }
 }
+
 
 
