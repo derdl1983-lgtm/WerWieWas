@@ -45,6 +45,14 @@ import java.util.concurrent.atomic.AtomicReference
  * Host api.msedgeservices.com (Token als Ocp-Apim-Subscription-Key,
  * rany2/edge-tts PR #491); der alte speech.platform.bing.com-Host wird als
  * Fallback weiter versucht. Die Stimmliste antwortet noch auf dem alten Host.
+ *
+ * Stand 23.10.2026: Der alte Host führt den WebSocket-Handshake inzwischen gar
+ * nicht mehr aus (HTTP 200 statt 101 – Endpunkt abgeschaltet) und dient nur
+ * noch als letzter Fallback. Der neue Host verlangt die Sec-MS-GEC-Version des
+ * echten Edge 155 („2-155.0.4283.45“) und rate-limitet Verbindungen hart
+ * (HTTP 429: Burst von ~5 Handshakes, danach ~1 alle 3–4 s). Deshalb: aktuelle
+ * Edge-155-Version im Token/User-Agent, ein 4-Sekunden-Verbindungstakt und
+ * automatischer 429-Rückoff mit Retry-After.
  */
 object EdgeTTS {
 
@@ -172,7 +180,35 @@ object EdgeTTS {
 
     private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491A6F4"
     private const val WIN_EPOCH = 11644473600L
-    private const val CHROMIUM_FULL_VERSION = "143.0.3650.75"
+    // Edge 155 sendet „Sec-MS-GEC-Version=2-155.0.4283.45“; mit der alten
+    // 143er-Version wurde der Handshake auf dem neuen Host gedrosselt/abgelehnt.
+    private const val CHROMIUM_FULL_VERSION = "155.0.4283.45"
+    // User-Agent des echten Edge 155 (erfasst per edge://net-export,
+    // rany2/edge-tts Issue #490).
+    private val EDGE_USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"
+
+    // Verbindungstakt: Der neue Host erlaubt nur einen Burst von ~5
+    // WebSocket-Handshakes und danach etwa einen alle 3–4 Sekunden (HTTP 429,
+    // Token-Bucket). Serien-Synthesen (Video-Export mit 7–8 Szenen) werden
+    // deshalb pro Verbindung auf 4 Sekunden Abstand getaktet.
+    private val connectPaceLock = Any()
+    private var lastConnectAt = 0L
+
+    /** Wartet ggf., bis der nächste WebSocket-Handshake wieder erlaubt ist. */
+    private fun paceConnection() {
+        synchronized(connectPaceLock) {
+            val waitMs = lastConnectAt + 4000L - System.currentTimeMillis()
+            if (waitMs > 0) {
+                try {
+                    Thread.sleep(waitMs)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+            lastConnectAt = System.currentTimeMillis()
+        }
+    }
 
     // Seit Oktober 2026 (Edge 155) lehnt der alte speech.platform.bing.com-Host
     // den Synthese-WebSocket in vielen Regionen mit 401/403 ab; Edge synthetisiert
@@ -448,7 +484,10 @@ object EdgeTTS {
     /** Fehler, bei dem ein Retry mit korrigierter Uhrzeit sinnvoll ist. */
     private class SkewException(message: String, val skewSeconds: Long) : IOException(message)
 
-    private class FailInfo(val code: Int?, val dateHeader: String?, val message: String?)
+    /** Der Dienst hat die Verbindung gedrosselt (HTTP 429) – nach Wartezeit erneut versuchen. */
+    private class RateLimitedException(message: String, val retryAfterMs: Long) : IOException(message)
+
+    private class FailInfo(val code: Int?, val dateHeader: String?, val message: String?, val retryAfterHeader: String?)
 
     private fun parseServerDate(date: String?): Long? {
         if (date == null) return null
@@ -459,6 +498,7 @@ object EdgeTTS {
         } catch (e: Exception) {
             null
         }
+
     }
 
     /**
@@ -477,7 +517,7 @@ object EdgeTTS {
                 + "&Sec-MS-GEC=" + secMsGecV2(skewSeconds)
                 + "&Sec-MS-GEC-Version=2-" + CHROMIUM_FULL_VERSION)
             val req = Request.Builder().url(url)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
+                .header("User-Agent", EDGE_USER_AGENT)
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .header("Cookie", "muid=" + muid() + ";")
                 .build()
@@ -500,31 +540,53 @@ object EdgeTTS {
     fun synthesizeToMp3(text: String, voice: String, ratePercent: Int, outFile: File, ssml: Boolean = false, pauseScale: Float = 1f): File {
         var lastSkew: SkewException? = null
         var lastHard: IOException? = null
+        var hardNew: IOException? = null
+        var rateLimited: RateLimitedException? = null
         // Erst der neue Host (api.msedgeservices.com), danach der alte:
-        // Microsoft rollt die Umstellung regional aus, je nach Region
-        // verweigert einer der beiden Hosts den Handshake (401/403).
+        // Der alte Host lehnt den Handshake inzwischen komplett ab (HTTP 200
+        // statt 101) und ist nur noch ein letzter Fallback. Beim neuen Host
+        // wird zusätzlich HTTP 429 (Drosselung) mit Wartezeit + Neuversuch
+        // behandelt, statt sofort aufzugeben.
         for (useLegacy in booleanArrayOf(false, true)) {
             var skew = 0L
-            for (attempt in 0 until 3) {
+            var attempt = 0
+            while (attempt < 3) {
                 try {
                     return synthesizeOnce(text, voice, ratePercent, outFile, skew, useLegacy, ssml, pauseScale)
+                } catch (e: RateLimitedException) {
+                    // Gedrosselt (HTTP 429): Retry-After (oder 4 s) warten und
+                    // auf demselben Host erneut versuchen.
+                    rateLimited = e
+                    try {
+                        Thread.sleep(e.retryAfterMs)
+                    } catch (ie: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw IOException("Sprachsynthese unterbrochen.")
+                    }
+                    attempt++
                 } catch (e: SkewException) {
                     skew = e.skewSeconds
                     lastSkew = e
+                    attempt++
                 } catch (e: IOException) {
                     // Ohne nutzbaren Skew (Netzwerk-Fehler) → anderen Host probieren
+                    if (!useLegacy && hardNew == null) hardNew = e
                     lastHard = e
                     break
                 }
             }
         }
-        throw IOException(
-            "Sprachsynthese fehlgeschlagen: " +
-                (lastHard?.message ?: lastSkew?.message ?: "unbekannter Fehler")
-        )
+        // Ursache bevorzugen, die wirklich weiterhilft: Drosselung oder der
+        // Fehler des neuen (primären) Hosts statt der bekannte 200er-Totgang
+        // des Legacy-Hosts.
+        val cause = rateLimited?.message ?: hardNew?.message ?: lastHard?.message ?: lastSkew?.message ?: "unbekannter Fehler"
+        throw IOException("Sprachsynthese fehlgeschlagen: " + cause)
     }
 
     private fun synthesizeOnce(text: String, voice: String, ratePercent: Int, outFile: File, skewSeconds: Long, useLegacyHost: Boolean, ssml: Boolean, pauseScale: Float = 1f): File {
+        // Proaktiver Verbindungstakt gegen das HTTP-429-Rate-Limit des neuen
+        // Hosts (Token-Bucket: ~5 im Burst, dann ~1 alle 3–4 Sekunden).
+        paceConnection()
         // Neuer Host: Token als Ocp-Apim-Subscription-Key (Referenz: rany2/edge-tts
         // PR #491, constants.py/communicate.py). Alter Host: TrustedClientToken.
         val secMsGec = secMsGecV2(skewSeconds)
@@ -552,7 +614,7 @@ object EdgeTTS {
             // Header-Reihenfolge und -Inhalt wie der echte Edge-Browser
             // (Accept-Encoding fehlte zuvor – OkHttp sendet nur „gzip“).
             Request.Builder().url(url)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
+                .header("User-Agent", EDGE_USER_AGENT)
                 .header("Accept-Encoding", "gzip, deflate, br, zstd")
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .header("Pragma", "no-cache")
@@ -621,7 +683,7 @@ object EdgeTTS {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    failure.set(FailInfo(response?.code, response?.header("Date"), t.message))
+                    failure.set(FailInfo(response?.code, response?.header("Date"), t.message, response?.header("Retry-After")))
                     done.countDown()
                 }
 
@@ -654,10 +716,29 @@ object EdgeTTS {
                     }
                     throw IOException(msg)
                 }
+                if (code == 429) {
+                    // Drosselung (Token-Bucket): Retry-After beachten, sonst 4 s
+                    // warten – danach wird auf demselben Host erneut versucht.
+                    val retryAfterSec = err.retryAfterHeader?.trim()?.toLongOrNull()?.coerceIn(1L, 30L)
+                    val waitMs = (retryAfterSec ?: 4L) * 1000L
+                    throw RateLimitedException(
+                        "Verbindung gedrosselt (HTTP 429): Der Dienst erlaubt nur wenige Anfragen in Folge – es wird kurz gewartet und erneut versucht.",
+                        waitMs
+                    )
+                }
+                val detail = if (code == 200) {
+                    // OkHttp meldet hier: „Expected HTTP 101 response but was '200 OK'“.
+                    // Der Server führt den Handshake nicht mehr aus (abgeschalteter
+                    // Endpunkt, z. B. der alte Host) oder ein Netzwerk-/Hotspot-Filter
+                    // antwortet an seiner Stelle.
+                    "Der Server hat den WebSocket-Handshake abgelehnt (200 statt 101) – Endpunkt abgeschaltet oder Netzwerk-Filter aktiv"
+                } else {
+                    err.message ?: "unbekannter Fehler"
+                }
                 throw IOException(
                     "Verbindung fehlgeschlagen" +
                         (if (code != null) " (HTTP " + code + ")" else "") +
-                        ": " + (err.message ?: "unbekannter Fehler")
+                        ": " + detail
                 )
             }
             val mp3 = audio.toByteArray()

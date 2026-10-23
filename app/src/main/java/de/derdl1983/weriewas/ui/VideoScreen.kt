@@ -332,6 +332,10 @@ fun VideoScreen(
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var edgeLoading by remember { mutableStateOf(false) }
     var edgeError by remember { mutableStateOf<String?>(null) }
+    // Online-Stimme dauerhaft unerreichbar? Dann weicht die Vorschau
+    // automatisch auf die Smartphone-Sprachausgabe aus, statt stumm
+    // stehen zu bleiben.
+    var edgeDown by remember { mutableStateOf(false) }
 
     // Audio-Export: nur die gesprochene Erklärung, ohne Video
     var audioBusy by remember { mutableStateOf(false) }
@@ -462,10 +466,10 @@ fun VideoScreen(
         }
     }
 
-    LaunchedEffect(ttsReady, playing, page, speed, dualVoices) {
+    LaunchedEffect(ttsReady, playing, page, speed, dualVoices, edgeDown) {
         val engine = tts
         if (engine == null || !ttsReady) return@LaunchedEffect
-        if (useEdge) return@LaunchedEffect
+        if (useEdge && !edgeDown) return@LaunchedEffect
         if (playing) {
             speakCurrent(engine)
         } else {
@@ -474,8 +478,8 @@ fun VideoScreen(
     }
 
     // Wiedergabe über gratis Edge-TTS-Online-Stimmen
-    LaunchedEffect(useEdge, playing, page, speed) {
-        if (!useEdge) return@LaunchedEffect
+    LaunchedEffect(useEdge, playing, page, speed, edgeDown) {
+        if (!useEdge || edgeDown) return@LaunchedEffect
         val old = player
         old?.stop()
         old?.release()
@@ -494,6 +498,7 @@ fun VideoScreen(
             val mp3 = withContext(Dispatchers.IO) {
                 // Cache-Name enthält die Stimme, damit nach einem Sprachwechsel
                 // im KI-Profil keine alte Sprachversion abgespielt wird.
+
                 // Pausen-Faktor im Cache-Namen festhalten, damit nach einem
                 // Zielgruppen-Wechsel (z. B. Senioren) die neue Pausierung
                 // erzeugt und abgespielt wird.
@@ -519,8 +524,16 @@ fun VideoScreen(
                 p.start()
             }
         } catch (e: Exception) {
-            edgeError = "Online-Stimme nicht erreichbar: " + (e.message ?: "unbekannter Fehler")
-            playing = false
+            if (ttsReady) {
+                // Online-Stimme unerreichbar: Die Vorschau läuft mit der
+                // Smartphone-Sprachausgabe weiter, statt stumm zu enden.
+                edgeError = "Online-Stimme nicht erreichbar – die Smartphone-Stimme übernimmt (" +
+                    (e.message ?: "unbekannter Fehler") + ")"
+                edgeDown = true
+            } else {
+                edgeError = "Online-Stimme nicht erreichbar: " + (e.message ?: "unbekannter Fehler")
+                playing = false
+            }
         } finally {
             edgeLoading = false
         }
@@ -785,6 +798,7 @@ fun VideoScreen(
                         ", Erklärbär " + EdgeTTS.labelFor(if (edgeB.isNotBlank()) edgeB else edgeA) +
                         "." +
                         (if (aiLang != "de") " Die Stimmen folgen der Profil-Sprache " + OnlineAnalyzer.languageName(aiLang) + "." else "") +
+                        (if (edgeDown) " Aktuell nicht erreichbar – die Smartphone-Stimme übernimmt." else "") +
                         " Benötigt Internet.",
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
@@ -985,6 +999,7 @@ fun VideoScreen(
             }
             Spacer(Modifier.height(6.dp))
             Row(
+
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1296,20 +1311,25 @@ private fun exportAudioOnly(
     val base = ("WerWieWas-" + cleanTitle + "-" + discovery.id.take(8))
         .replace(Regex("\\s+"), "-")
     if (useEdge) {
-        val vA = if (edgeA.isNotBlank()) edgeA else edgeB
-        val vB = if (edgeB.isNotBlank()) edgeB else edgeA
-        val rp = ratePercent(speed)
-        val ps = EdgeTTS.pauseScaleFor(context)
-        val out = ByteArrayOutputStream()
-        slides.forEachIndexed { i, s ->
-            val voice = if (i % 2 == 1) vB else vA
-            val mp3 = File(context.cacheDir, "www_exps_" + discovery.id + "_" + i + "_" + rp + "_" + voice.hashCode() + "_p" + (ps * 100).toInt() + ".mp3")
-            if (!mp3.exists() || mp3.length() < 200L) {
-                EdgeTTS.synthesizeToMp3(s.title + ". " + s.text, voice, rp, mp3, ssml = true, pauseScale = ps)
+        val edgeAudio = runCatching {
+            val vA = if (edgeA.isNotBlank()) edgeA else edgeB
+            val vB = if (edgeB.isNotBlank()) edgeB else edgeA
+            val rp = ratePercent(speed)
+            val ps = EdgeTTS.pauseScaleFor(context)
+            val out = ByteArrayOutputStream()
+            slides.forEachIndexed { i, s ->
+                val voice = if (i % 2 == 1) vB else vA
+                val mp3 = File(context.cacheDir, "www_exps_" + discovery.id + "_" + i + "_" + rp + "_" + voice.hashCode() + "_p" + (ps * 100).toInt() + ".mp3")
+                if (!mp3.exists() || mp3.length() < 200L) {
+                    EdgeTTS.synthesizeToMp3(s.title + ". " + s.text, voice, rp, mp3, ssml = true, pauseScale = ps)
+                }
+                out.write(mp3.readBytes())
             }
-            out.write(mp3.readBytes())
-        }
-        return VideoExporter.saveAudioMp3(context, base, out.toByteArray())
+            VideoExporter.saveAudioMp3(context, base, out.toByteArray())
+        }.getOrNull()
+        if (edgeAudio != null) return edgeAudio
+        // Online-Stimmen unerreichbar: Fallback über die System-Sprachausgabe,
+        // damit der Audio-Export nicht komplett fehlschlägt.
     }
     return VideoExporter.exportAudioWav(
         context,
