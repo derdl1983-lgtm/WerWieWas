@@ -101,17 +101,15 @@ object KokoroTTS {
         val d = dir(context)
         if (!d.exists()) d.mkdirs()
         onProgress(0.01f, "Download wird vorbereitet …")
-        try {
-            fetch(context, URL_TOKENS, File(d, "tokens.txt"), TOKENS_BYTES, null, 0.01f, 0.02f, onProgress, "Sprachbausteine …")
-            fetch(context, URL_VOICES, File(d, "voices.bin"), VOICES_BYTES, VOICES_SHA, 0.02f, 0.04f, onProgress, "Stimmprofil (Victoria) …")
-            // espeak-ng-Aussprache-Daten: komprimiertes Tar-Archiv entpacken
-            val tar = File(context.cacheDir, "kokoro_espeak.tar.bz2")
-            fetch(context, URL_ESPEAK, tar, null, ESPEAK_SHA, 0.04f, 0.08f, onProgress, "Aussprache-Regeln …")
-            extractTarBz2(tar, d)
-            runCatching { tar.delete() }
-            // Das Sprachmodell ist der große Teil (~114 MB) – Smooth-Fortschritt.
-            fetch(context, URL_MODEL, File(d, "model.int8.onnx"), MODEL_BYTES, MODEL_SHA, 0.08f, 0.99f, onProgress, "KI-Sprachmodell (Victoria) …")
-        }
+        fetch(context, URL_TOKENS, File(d, "tokens.txt"), TOKENS_BYTES, null, 0.01f, 0.02f, onProgress, "Sprachbausteine …")
+        fetch(context, URL_VOICES, File(d, "voices.bin"), VOICES_BYTES, VOICES_SHA, 0.02f, 0.04f, onProgress, "Stimmprofil (Victoria) …")
+        // espeak-ng-Aussprache-Daten: komprimiertes Tar-Archiv entpacken
+        val tar = File(context.cacheDir, "kokoro_espeak.tar.bz2")
+        fetch(context, URL_ESPEAK, tar, null, ESPEAK_SHA, 0.04f, 0.08f, onProgress, "Aussprache-Regeln …")
+        extractTarBz2(tar, d)
+        runCatching { tar.delete() }
+        // Das Sprachmodell ist der große Teil (~114 MB) – Smooth-Fortschritt.
+        fetch(context, URL_MODEL, File(d, "model.int8.onnx"), MODEL_BYTES, MODEL_SHA, 0.08f, 0.99f, onProgress, "KI-Sprachmodell (Victoria) …")
         onProgress(1f, "Offline-Stimme ist bereit.")
     }
 
