@@ -1,3 +1,4 @@
+import java.net.URL
 import java.security.MessageDigest
 
 plugins {
@@ -33,7 +34,7 @@ val sherpaOnnxAar: File = run {
     if (!target.exists() || sha256(target) != sha) {
         dir.mkdirs()
         val part = File(dir, "sherpa-onnx-1.13.8.aar.part")
-        java.net.URL(url).openStream().use { input ->
+        URL(url).openStream().use { input ->
             part.outputStream().use { output -> input.copyTo(output, 1 shl 20) }
         }
         if (!part.exists() || sha256(part) != sha) {
