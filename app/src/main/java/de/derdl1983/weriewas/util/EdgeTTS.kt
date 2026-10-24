@@ -499,6 +499,7 @@ object EdgeTTS {
             null
         }
 
+
     }
 
     /**
@@ -536,8 +537,14 @@ object EdgeTTS {
      * ein (SSML-Breaks). Bei 401/403 wird die Geräte-Uhr anhand der Server-Zeit
      * korrigiert und mehrfach erneut versucht; zusätzlich läuft nach dem neuen Host
      * (api.msedgeservices.com) immer noch der alte Host als Fallback.
+     *
+     * Lade-Timeout: Die gesamte Synthese ist auf maximal 60 Sekunden begrenzt –
+     * danach bricht sie mit klarer Meldung ab und die App kann auf die
+     * Smartphone-Stimme ausweichen, statt endlos „wird geladen …“ anzuzeigen.
      */
     fun synthesizeToMp3(text: String, voice: String, ratePercent: Int, outFile: File, ssml: Boolean = false, pauseScale: Float = 1f): File {
+        val deadline = System.currentTimeMillis() + 60_000L
+        var timedOut = false
         var lastSkew: SkewException? = null
         var lastHard: IOException? = null
         var hardNew: IOException? = null
@@ -551,11 +558,17 @@ object EdgeTTS {
             var skew = 0L
             var attempt = 0
             while (attempt < 3) {
+                if (System.currentTimeMillis() >= deadline) {
+                    timedOut = true
+                    break
+                }
                 try {
                     return synthesizeOnce(text, voice, ratePercent, outFile, skew, useLegacy, ssml, pauseScale)
                 } catch (e: RateLimitedException) {
                     // Gedrosselt (HTTP 429): Retry-After (oder 4 s) warten und
-                    // auf demselben Host erneut versuchen.
+                    // auf demselben Host erneut versuchen. 429 zählt nicht als
+                    // Fehlversuch – der Token-Bucket füllt sich alle 3–4 s
+                    // nach, die Gesamt-Deadline begrenzt die Schleife.
                     rateLimited = e
                     try {
                         Thread.sleep(e.retryAfterMs)
@@ -563,7 +576,6 @@ object EdgeTTS {
                         Thread.currentThread().interrupt()
                         throw IOException("Sprachsynthese unterbrochen.")
                     }
-                    attempt++
                 } catch (e: SkewException) {
                     skew = e.skewSeconds
                     lastSkew = e
@@ -575,11 +587,20 @@ object EdgeTTS {
                     break
                 }
             }
+            if (timedOut) break
         }
-        // Ursache bevorzugen, die wirklich weiterhilft: Drosselung oder der
-        // Fehler des neuen (primären) Hosts statt der bekannte 200er-Totgang
-        // des Legacy-Hosts.
-        val cause = rateLimited?.message ?: hardNew?.message ?: lastHard?.message ?: lastSkew?.message ?: "unbekannter Fehler"
+        // Ursache bevorzugen, die wirklich weiterhilft: Zeitüberschreitung,
+        // Drosselung oder der Fehler des neuen (primären) Hosts statt des
+        // bekannten 200er-Totgangs des Legacy-Hosts.
+        val cause = when {
+            timedOut -> "Der Dienst antwortet zu langsam (Zeitüberschreitung nach 60 s)" +
+                (if (rateLimited != null) " – zuletzt gedrosselt (HTTP 429)" else "")
+            rateLimited != null -> rateLimited.message
+            hardNew != null -> hardNew.message
+            lastHard != null -> lastHard.message
+            lastSkew != null -> lastSkew.message
+            else -> "unbekannter Fehler"
+        }
         throw IOException("Sprachsynthese fehlgeschlagen: " + cause)
     }
 
@@ -604,7 +625,7 @@ object EdgeTTS {
                 + "&ConnectionId=" + requestId()
         )
         val client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .build()
         val audio = ByteArrayOutputStream()
@@ -693,8 +714,8 @@ object EdgeTTS {
             }
         )
         try {
-            if (!done.await(90, TimeUnit.SECONDS)) {
-                throw IOException("Zeitüberschreitung bei der Sprachsynthese.")
+            if (!done.await(30, TimeUnit.SECONDS)) {
+                throw IOException("Zeitüberschreitung bei der Sprachsynthese (keine Audiodaten erhalten).")
             }
             val err = failure.get()
             if (err != null) {
