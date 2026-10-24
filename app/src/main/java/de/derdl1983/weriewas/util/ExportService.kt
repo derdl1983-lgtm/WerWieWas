@@ -83,7 +83,7 @@ class ExportService : Service() {
             wantMusic: Boolean,
             musicMood: String,
             speed: Float,
-            useEdge: Boolean,
+            ttsEngine: String,
             edgeVoiceA: String,
             edgeVoiceB: String,
             sysVoiceNameA: String,
@@ -99,7 +99,7 @@ class ExportService : Service() {
                 putExtra("music", wantMusic)
                 putExtra("mood", musicMood)
                 putExtra("speed", speed)
-                putExtra("use_edge", useEdge)
+                putExtra("tts_engine", ttsEngine)
                 putExtra("edge_a", edgeVoiceA)
                 putExtra("edge_b", edgeVoiceB)
                 putExtra("sys_a", sysVoiceNameA)
@@ -220,7 +220,8 @@ class ExportService : Service() {
         try {
             val slides = parseSlides(intent.getStringExtra("slides") ?: "[]")
             val speed = intent.getFloatExtra("speed", 1f)
-            val useEdge = intent.getBooleanExtra("use_edge", false)
+            val ttsEngine = intent.getStringExtra("tts_engine") ?: "system"
+            val useEdge = ttsEngine == "edge"
             val edgeA = intent.getStringExtra("edge_a") ?: ""
             val edgeB = intent.getStringExtra("edge_b") ?: ""
             val wantMusic = intent.getBooleanExtra("music", true)
@@ -231,43 +232,76 @@ class ExportService : Service() {
                 "landscape1080" -> 1920 to 1080
                 else -> 720 to 1280
             }
-            // Gratis Edge-TTS-Stimmen vorbereiten (mit SSML-Pausen für
-            // natürlichere Sprechpausen) – wie zuvor im Video-Screen.
-            // Der Cache-Dateiname enthält die Stimme, damit nach einem
-            // Sprachwechsel im KI-Profil keine alte Sprachversion läuft.
-            val preAudio: List<File?>? = if (useEdge) {
-                val vA = if (edgeA.isNotBlank()) edgeA else edgeB
-                val vB = if (edgeB.isNotBlank()) edgeB else edgeA
-                val rp = ((speed - 1f) * 100f).toInt().coerceIn(-50, 100)
-                // Pausen-Faktor des KI-Profils (Senioren: mehr Atempause) –
-                // im Cache-Namen festhalten, damit keine alte Fassung läuft.
-                val ps = EdgeTTS.pauseScaleFor(appContext)
-                slides.mapIndexed { i, s ->
-                    try {
-                        val voice = if (i % 2 == 1) vB else vA
-                        val tag = voice.hashCode().toString() + "_p" + (ps * 100).toInt()
-                        val mp3 = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_" + tag + ".mp3")
-                        val wav = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_" + tag + ".wav")
-                        if (!mp3.exists() || mp3.length() < 200L) {
-                            EdgeTTS.synthesizeToMp3(
-                                s.title + ". " + s.text,
-                                voice,
-                                rp,
-                                mp3,
-                                ssml = true,
-                                pauseScale = ps
-                            )
+            // Gesprochene Szenen vorbereiten: Online-Stimmen (Edge-TTS) oder
+            // die Offline-Stimme (Kokoro „Victoria", ohne Internet nutzbar).
+            // Der Cache-Dateiname enthält Stimme/Engine, damit nach einem
+            // Wechsel keine alte Sprachversion weiterläuft.
+            val rp = ((speed - 1f) * 100f).toInt().coerceIn(-50, 100)
+            val preAudio: List<File?>? = when {
+                ttsEngine == "kokoro" -> {
+                    // Offline-Stimme: braucht kein Internet, keine Drosselung.
+                    // Schlägt eine Szene fehl, greift der VideoExporter pro
+                    // Szene auf die System-Sprachausgabe zurück.
+                    slides.mapIndexed { i, s ->
+                        try {
+                            val f = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_kokoro.wav")
+                            if (!f.exists() || f.length() < 200L) {
+                                KokoroTTS.synthesize(appContext, s.title + ". " + s.text, speed, f)
+                            }
+                            f
+                        } catch (e: Exception) {
+                            null
                         }
-                        if (!wav.exists() || wav.lastModified() < mp3.lastModified()) {
-                            EdgeTTS.mp3ToWav(mp3, wav)
-                        }
-                        wav
-                    } catch (e: Exception) {
-                        null
                     }
                 }
-            } else {
-                null
+                useEdge -> {
+                    val vA = if (edgeA.isNotBlank()) edgeA else edgeB
+                    val vB = if (edgeB.isNotBlank()) edgeB else edgeA
+                    // Pausen-Faktor des KI-Profils (Senioren: mehr Atempause) –
+                    // im Cache-Namen festhalten, damit keine alte Fassung läuft.
+                    val ps = EdgeTTS.pauseScaleFor(appContext)
+                    slides.mapIndexed { i, s ->
+                        try {
+                            val voice = if (i % 2 == 1) vB else vA
+                            val tag = voice.hashCode().toString() + "_p" + (ps * 100).toInt()
+                            val mp3 = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_" + tag + ".mp3")
+                            val wav = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_" + tag + ".wav")
+                            if (!mp3.exists() || mp3.length() < 200L) {
+                                EdgeTTS.synthesizeToMp3(
+                                    s.title + ". " + s.text,
+                                    voice,
+                                    rp,
+                                    mp3,
+                                    ssml = true,
+                                    pauseScale = ps
+                                )
+                            }
+                            if (!wav.exists() || wav.lastModified() < mp3.lastModified()) {
+                                EdgeTTS.mp3ToWav(mp3, wav)
+                            }
+                            wav
+                        } catch (e: Exception) {
+                            // Edge drosselt oder ist gerade nicht erreichbar:
+                            // Ist die Offline-Stimme heruntergeladen, übernimmt
+                            // sie die Szene; sonst (im VideoExporter) die
+                            // System-Sprachausgabe.
+                            try {
+                                if (KokoroTTS.isDownloaded(appContext)) {
+                                    val kf = File(cacheDir, "www_exps_" + discoveryId + "_" + i + "_" + rp + "_kokoro.wav")
+                                    if (!kf.exists() || kf.length() < 200L) {
+                                        KokoroTTS.synthesize(appContext, s.title + ". " + s.text, speed, kf)
+                                    }
+                                    kf
+                                } else {
+                                    null
+                                }
+                            } catch (e2: Exception) {
+                                null
+                            }
+                        }
+                    }
+                }
+                else -> null
             }
             // Antwort-Sprache des KI-Profils: Die System-Stimmen folgen ihr
             // automatisch; sind dafür keine Stimmen installiert, greifen die
@@ -332,6 +366,9 @@ class ExportService : Service() {
             ExportBus.finishRun(discoveryId, result)
             done = buildDoneNotification(result)
         } finally {
+            // Die native Offline-Engine braucht viel RAM (~200 MB): nach dem
+            // Export wieder freigeben, die nächste Synthese lädt sie neu.
+            runCatching { KokoroTTS.release() }
             stopForeground(STOP_FOREGROUND_REMOVE)
             if (done != null && canNotify()) {
                 runCatching { manager.notify(NOTIF_ID + 1, done) }

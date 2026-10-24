@@ -1278,6 +1278,13 @@ object VideoExporter {
         saveAudio(context, base, mp3, "audio/mpeg", ".mp3")
 
     /**
+     * Speichert fertig gesprochene Audio-Daten (16-Bit-PCM als WAV-Bytes,
+     * z. B. von der Offline-Stimme „Victoria") unter Musik/WerWieWas.
+     */
+    fun saveAudioWav(context: Context, base: String, wav: ByteArray): AudioExportResult =
+        saveAudio(context, base, wav, "audio/wav", ".wav")
+
+    /**
      * Exportiert die gesprochene Erklärung mit den System-Stimmen als WAV-Datei
      * (44,1 kHz Stereo, mit 0,7 Sekunden Pause zwischen den Szenen und auf
      * YouTube-Lautstärke von −14 LUFS normalisiert). Fallback, wenn keine

@@ -84,6 +84,7 @@ import de.derdl1983.weriewas.util.EdgeTTS
 import de.derdl1983.weriewas.util.ExportBus
 import de.derdl1983.weriewas.util.ExportService
 import de.derdl1983.weriewas.util.Images
+import de.derdl1983.weriewas.util.KokoroTTS
 import de.derdl1983.weriewas.util.VideoExporter
 import de.derdl1983.weriewas.util.WebImages
 import org.json.JSONArray
@@ -235,7 +236,29 @@ fun VideoScreen(
     val edgeB = remember(aiLang) {
         EdgeTTS.resolveVoice(prefs.getString("edge_voice_b", "") ?: "", aiLang, 1)
     }
-    val useEdge = edgeA.isNotBlank() || edgeB.isNotBlank()
+    val edgeReady = edgeA.isNotBlank() || edgeB.isNotBlank()
+
+    // Stimmen-Engine wählbar: Online (Edge-TTS), Offline („Victoria", ohne
+    // Internet nutzbar) oder die Smartphone-Sprachausgabe. Die Wahl bleibt
+    // über das Verlassen des Screens hinaus gespeichert.
+    var ttsEngine by rememberSaveable {
+        mutableStateOf(prefs.getString("tts_engine", if (edgeReady) "edge" else "system") ?: "system")
+    }
+    // Ist die Offline-Stimme schon heruntergeladen? (Datei-Check im Hintergrund)
+    var kokoroReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kokoroReady = withContext(Dispatchers.IO) { KokoroTTS.isDownloaded(context) }
+    }
+    var kokoroDownloading by remember { mutableStateOf(false) }
+    var kokoroProgress by remember { mutableStateOf(0f) }
+    var kokoroStatus by remember { mutableStateOf<String?>(null) }
+    var kokoroError by remember { mutableStateOf<String?>(null) }
+    var kokoroLoading by remember { mutableStateOf(false) }
+    var kokoroDown by remember { mutableStateOf(false) }
+    // Victoria spricht nur Deutsch: Bei anderer Profil-Sprache bleiben die
+    // anderen Engines aktiv, statt deutschen Akzent über fremde Texte zu legen.
+    val useEdge = ttsEngine == "edge" && edgeReady
+    val useKokoro = ttsEngine == "kokoro" && kokoroReady && aiLang.take(2) == "de"
 
     var page by remember { mutableIntStateOf(0) }
     var playing by remember { mutableStateOf(true) }
@@ -292,6 +315,15 @@ fun VideoScreen(
     // automatisch auf die Smartphone-Sprachausgabe aus, statt stumm
     // stehen zu bleiben.
     var edgeDown by remember { mutableStateOf(false) }
+
+    /** Engine-Wechsel: Auswahl speichern und gemerkte Fehlerzustände zurücksetzen. */
+    fun selectEngine(engine: String) {
+        ttsEngine = engine
+        prefs.edit().putString("tts_engine", engine).apply()
+        edgeDown = false
+        kokoroDown = false
+        kokoroError = null
+    }
 
     // Audio-Export: nur die gesprochene Erklärung, ohne Video
     var audioBusy by remember { mutableStateOf(false) }
@@ -398,7 +430,7 @@ fun VideoScreen(
 
     // Zeitüberschreitung, falls die System-Sprachausgabe nie bereit wird
     LaunchedEffect(ttsReady) {
-        if (!useEdge && !ttsReady) {
+        if (!useEdge && !useKokoro && !ttsReady) {
             delay(20000)
             if (!ttsReady) ttsFailed = true
         }
@@ -411,13 +443,16 @@ fun VideoScreen(
             audioPlayer?.release()
             audioPlayer = null
             audioPlaying = false
+            // Native Offline-Engine braucht viel RAM – beim Verlassen des
+            // Screens freigeben (ein laufender Export lädt sie bei Bedarf neu).
+            runCatching { KokoroTTS.release() }
         }
     }
 
-    LaunchedEffect(ttsReady, playing, page, speed, dualVoices, edgeDown) {
+    LaunchedEffect(ttsReady, playing, page, speed, dualVoices, edgeDown, kokoroDown, useEdge, useKokoro) {
         val engine = tts
         if (engine == null || !ttsReady) return@LaunchedEffect
-        if (useEdge && !edgeDown) return@LaunchedEffect
+        if ((useEdge && !edgeDown) || (useKokoro && !kokoroDown)) return@LaunchedEffect
         if (playing) {
             speakCurrent(engine)
         } else {
@@ -487,6 +522,54 @@ fun VideoScreen(
         }
     }
 
+    // Wiedergabe über die Offline-Stimme (Kokoro „Victoria") – ohne Internet,
+    // ohne Drosselung. Schlägt sie fehl, übernimmt die Smartphone-Stimme.
+    LaunchedEffect(useKokoro, playing, page, speed, kokoroDown) {
+        if (!useKokoro || kokoroDown) return@LaunchedEffect
+        val old = player
+        old?.stop()
+        old?.release()
+        player = null
+        if (!playing) return@LaunchedEffect
+        val slide = slides[page]
+        val rp = ratePercent(speed)
+        kokoroLoading = true
+        try {
+            val wav = withContext(Dispatchers.IO) {
+                val f = File(context.cacheDir, "www_koko_s_" + discovery.id + "_" + page + "_" + rp + ".wav")
+                if (!f.exists() || f.length() < 200L) {
+                    KokoroTTS.synthesize(context, slide.title + ". " + slide.text, speed, f)
+                }
+                f
+            }
+            if (playing) {
+                val p = MediaPlayer()
+                p.setDataSource(wav.absolutePath)
+                p.prepare()
+                p.setOnCompletionListener {
+                    if (playing && page < slides.size - 1) {
+                        page += 1
+                    } else {
+                        playing = false
+                    }
+                }
+                player = p
+                p.start()
+            }
+        } catch (e: Exception) {
+            if (ttsReady) {
+                kokoroError = "Offline-Stimme fehlgeschlagen – die Smartphone-Stimme übernimmt (" +
+                    (e.message ?: "unbekannter Fehler") + ")"
+                kokoroDown = true
+            } else {
+                kokoroError = "Offline-Stimme fehlgeschlagen: " + (e.message ?: "unbekannter Fehler")
+                playing = false
+            }
+        } finally {
+            kokoroLoading = false
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -509,7 +592,7 @@ fun VideoScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            if (!ttsReady && !useEdge) {
+            if (!ttsReady && !useEdge && !useKokoro) {
                 if (ttsFailed) {
                     Text(
                         "Die Sprachausgabe dieses Geräts ist nicht verfügbar. " +
@@ -701,6 +784,24 @@ fun VideoScreen(
                 )
                 Spacer(Modifier.height(12.dp))
             }
+            if (kokoroLoading) {
+                Text(
+                    "Offline-Stimme wird erzeugt …",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+            val kokoroErrMsg = kokoroError
+            if (kokoroErrMsg != null) {
+                Text(
+                    kokoroErrMsg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(12.dp))
+            }
             val edgeErrMsg = edgeError
             if (edgeErrMsg != null) {
                 Text(
@@ -740,44 +841,152 @@ fun VideoScreen(
             }
             Spacer(Modifier.height(16.dp))
 
-            if (useEdge) {
-                Text(
-                    text = "Online-Stimmen aktiv (Edge-TTS, gratis, ohne API-Schlüssel): Moderator " +
-                        EdgeTTS.labelFor(if (edgeA.isNotBlank()) edgeA else edgeB) +
-                        ", Erklärbär " + EdgeTTS.labelFor(if (edgeB.isNotBlank()) edgeB else edgeA) +
-                        "." +
-                        (if (aiLang != "de") " Die Stimmen folgen der Profil-Sprache " + OnlineAnalyzer.languageName(aiLang) + "." else "") +
-                        (if (edgeDown) " Aktuell nicht erreichbar – die Smartphone-Stimme übernimmt." else "") +
-                        " Benötigt Internet.",
-                    style = MaterialTheme.typography.bodySmall,
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
-            } else {
+            // Stimmen-Auswahl: Online (Edge-TTS), Offline („Victoria") oder Smartphone
+            Text(
+                "Stimme",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(8.dp))
+            listOf(
+                "edge" to "🌐 Online-Stimmen (Edge, gratis)",
+                "kokoro" to "📴 Offline-Stimme „Victoria“",
+                "system" to "📱 Smartphone-Stimmen"
+            ).forEach { (key, label) ->
                 OutlinedButton(
-                    onClick = {
-                        dualVoices = !dualVoices
-                    },
-                    colors = if (dualVoices) {
+                    onClick = { selectEngine(key) },
+                    enabled = key != "edge" || edgeReady,
+                    colors = if (ttsEngine == key) {
                         ButtonDefaults.outlinedButtonColors(
                             containerColor = MaterialTheme.colorScheme.primaryContainer
                         )
                     } else {
                         ButtonDefaults.outlinedButtonColors()
-                    }
+                    },
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(if (dualVoices) "Zwei Stimmen: abwechselnd" else "Zwei Stimmen: aus")
+                    Text(label)
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
+            }
+            if (ttsEngine == "edge" && !edgeReady) {
                 Text(
-                    text = "Moderator und Erklärbär wechseln sich pro Szene ab. " +
-                        "Die Stimmen kannst du in den Einstellungen wählen." +
-                        (if (voiceB == null) " Auf diesem Gerät ist nur eine Stimme installiert – die zweite wird dann über die Tonhöhe simuliert." else "") +
-                        (if (aiLang != "de") " Fehlt eine Stimme für die Profil-Sprache " + OnlineAnalyzer.languageName(aiLang) + ", greift die deutsche Sprachausgabe." else ""),
+                    "Für die Online-Stimmen wähle einmal die kostenlosen Edge-Stimmen in den Einstellungen.",
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
+            }
+            when {
+                useEdge -> {
+                    Text(
+                        text = "Online-Stimmen aktiv (Edge-TTS, gratis, ohne API-Schlüssel): Moderator " +
+                            EdgeTTS.labelFor(if (edgeA.isNotBlank()) edgeA else edgeB) +
+                            ", Erklärbär " + EdgeTTS.labelFor(if (edgeB.isNotBlank()) edgeB else edgeA) +
+                            "." +
+                            (if (aiLang != "de") " Die Stimmen folgen der Profil-Sprache " + OnlineAnalyzer.languageName(aiLang) + "." else "") +
+                            (if (edgeDown) " Aktuell nicht erreichbar – die Smartphone-Stimme übernimmt." else "") +
+                            (if (kokoroReady && aiLang.take(2) == "de") " Fällt Edge aus, übernimmt automatisch die Offline-Stimme." else "") +
+                            " Benötigt Internet.",
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+                ttsEngine == "kokoro" -> {
+                    when {
+                        aiLang.take(2) != "de" -> Text(
+                            "Victoria spricht nur Deutsch – für die Profil-Sprache " +
+                                OnlineAnalyzer.languageName(aiLang) +
+                                " bleiben die Online- oder Smartphone-Stimmen aktiv.",
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                        kokoroReady -> Text(
+                            "Offline-Stimme „Victoria“ aktiv: klingt natürlich, funktioniert ohne Internet und ist dauerhaft gratis. " +
+                                "Alle Szenen liest dieselbe Stimme vor.",
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                        kokoroDownloading -> {
+                            LinearProgressIndicator(
+                                progress = { kokoroProgress },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                (kokoroStatus ?: "Download läuft …") + " " +
+                                    (kokoroProgress * 100).toInt() + " % – die App kann geöffnet bleiben.",
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                        else -> {
+                            Text(
+                                "Einmaliger Download (~124 MB, am besten im WLAN). Danach funktioniert die Stimme ohne Internet.",
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    kokoroDownloading = true
+                                    kokoroError = null
+                                    kokoroProgress = 0f
+                                    scope.launch {
+                                        try {
+                                            withContext(Dispatchers.IO) {
+                                                KokoroTTS.download(context) { f, msg ->
+                                                    kokoroProgress = f
+                                                    kokoroStatus = msg
+                                                }
+                                            }
+                                            kokoroReady = true
+                                        } catch (e: Exception) {
+                                            kokoroError = "Download fehlgeschlagen: " +
+                                                (e.message ?: "unbekannter Fehler") +
+                                                " – einfach erneut versuchen, bereits fertige Teile bleiben erhalten."
+                                        } finally {
+                                            kokoroDownloading = false
+                                        }
+                                    }
+                                },
+                                enabled = !kokoroDownloading,
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Offline-Stimme jetzt herunterladen") }
+                        }
+                    }
+                }
+                else -> {
+                    OutlinedButton(
+                        onClick = {
+                            dualVoices = !dualVoices
+                        },
+                        colors = if (dualVoices) {
+                            ButtonDefaults.outlinedButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        } else {
+                            ButtonDefaults.outlinedButtonColors()
+                        }
+                    ) {
+                        Text(if (dualVoices) "Zwei Stimmen: abwechselnd" else "Zwei Stimmen: aus")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Moderator und Erklärbär wechseln sich pro Szene ab. " +
+                            "Die Stimmen kannst du in den Einstellungen wählen." +
+                            (if (voiceB == null) " Auf diesem Gerät ist nur eine Stimme installiert – die zweite wird dann über die Tonhöhe simuliert." else "") +
+                            (if (aiLang != "de") " Fehlt eine Stimme für die Profil-Sprache " + OnlineAnalyzer.languageName(aiLang) + ", greift die deutsche Sprachausgabe." else ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                }
             }
             Spacer(Modifier.height(16.dp))
 
@@ -916,7 +1125,7 @@ fun VideoScreen(
             }
             Spacer(Modifier.height(20.dp))
 
-            if (ttsFailed && !useEdge) {
+            if (ttsFailed && !useEdge && !useKokoro) {
                 Text(
                     "Keine Sprachausgabe auf diesem Gerät gefunden – das Video wird ohne Ton exportiert. " +
                         "Für natürliche Stimmen einmal kostenlos Edge-TTS in den Einstellungen einrichten.",
@@ -961,7 +1170,7 @@ fun VideoScreen(
                         wantMusic,
                         musicMood,
                         speed,
-                        useEdge,
+                        if (useKokoro) "kokoro" else if (useEdge) "edge" else "system",
                         edgeA,
                         edgeB,
                         voiceA?.name ?: "",
@@ -1009,7 +1218,8 @@ fun VideoScreen(
                             val result = withContext(Dispatchers.IO) {
                                 exportAudioOnly(
                                     context, discovery, slides, speed,
-                                    useEdge, edgeA, edgeB, voiceA, voiceB, aiLang
+                                    if (useKokoro) "kokoro" else if (useEdge) "edge" else "system",
+                                    edgeA, edgeB, voiceA, voiceB, aiLang
                                 )
                             }
                             audioResult = result
@@ -1200,7 +1410,7 @@ private fun exportAudioOnly(
     discovery: Discovery,
     slides: List<Slide>,
     speed: Float,
-    useEdge: Boolean,
+    ttsEngine: String,
     edgeA: String,
     edgeB: String,
     voiceA: Voice?,
@@ -1213,6 +1423,36 @@ private fun exportAudioOnly(
         .trim().take(40)
     val base = ("WerWieWas-" + cleanTitle + "-" + discovery.id.take(8))
         .replace(Regex("\\s+"), "-")
+    val useEdge = ttsEngine == "edge"
+    if (ttsEngine == "kokoro" && KokoroTTS.isDownloaded(context)) {
+        // Offline-Stimme: fertige Szenen-WAVs (geteilt mit dem Video-Export)
+        // aneinanderreihen und als eine WAV-Datei speichern.
+        val kokoroAudio = runCatching {
+            val rp = ratePercent(speed)
+            val out = ByteArrayOutputStream()
+            var sr = 24000
+            var first = true
+            slides.forEachIndexed { i, s ->
+                val f = File(context.cacheDir, "www_exps_" + discovery.id + "_" + i + "_" + rp + "_kokoro.wav")
+                val audio = if (f.exists() && f.length() > 200L) {
+                    KokoroTTS.readWav(f)
+                } else {
+                    KokoroTTS.synthesize(context, s.title + ". " + s.text, speed, f)
+                }
+                sr = audio.sampleRate
+                if (first) {
+                    // Kurze Vorlauf-Pause wie beim Edge-Export
+                    out.write(ByteArray((0.4f * sr * 2).toInt()))
+                    first = false
+                }
+                out.write(audio.pcm)
+                out.write(ByteArray((0.7f * sr * 2).toInt()))
+            }
+            VideoExporter.saveAudioWav(context, base, KokoroTTS.wavBytes(out.toByteArray(), sr))
+        }.getOrNull()
+        if (kokoroAudio != null) return kokoroAudio
+        // Offline-Stimme fehlgeschlagen: Fallback über Edge bzw. System-Stimmen
+    }
     if (useEdge) {
         val edgeAudio = runCatching {
             val vA = if (edgeA.isNotBlank()) edgeA else edgeB
