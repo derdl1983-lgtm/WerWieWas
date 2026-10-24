@@ -59,8 +59,8 @@ android {
         applicationId = "de.derdl1983.weriewas"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
     }
 
     // Festes Debug-Keystore: Ohne das signiert jeder CI-Lauf mit einem neuen Zufallsschlüssel,
