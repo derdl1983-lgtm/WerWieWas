@@ -499,6 +499,7 @@ object VideoExporter {
                 // Kein Foto vorhanden: Marken-Karte bleibt stehen
                 drawCard(c, t, 0L, true)
 
+
                 return
             }
             val f = (t.toFloat() / introUs.toFloat()).coerceIn(0f, 1f)
@@ -776,7 +777,7 @@ object VideoExporter {
             var r = s.toInt()
             if (loop != null && loopFrames > 0) {
                 val t = f / TARGET_RATE.toDouble()
-                var g = 0.5f
+                var g = 0.85f
                 if (t < 1.5) g *= (t / 1.5).toFloat()
                 val remain = totalSec - t
                 // Ausklingen im Outro etwas länger, damit das Video weich endet
@@ -786,14 +787,14 @@ object VideoExporter {
                 val de = speechEndSec + 0.4
                 if (t > ds && t < de) {
                     g *= when {
-                        t < ds + 0.6 -> 1f - 0.68f * ((t - ds) / 0.6).toFloat()
-                        t > de - 0.6 -> 1f - 0.68f * ((de - t) / 0.6).toFloat()
-                        else -> 0.32f
+                        t < ds + 0.6 -> 1f - 0.52f * ((t - ds) / 0.6).toFloat()
+                        t > de - 0.6 -> 1f - 0.52f * ((de - t) / 0.6).toFloat()
+                        else -> 0.48f
                     }
                 }
                 // Sicherheits-Szene: Musik fast ganz absenken – die Warnung
                 // soll ernst rüberkommen, nicht von der Melodie geschluckt.
-                if (warnSec.any { t >= it.first && t < it.second }) g *= 0.2f
+                if (warnSec.any { t >= it.first && t < it.second }) g *= 0.35f
                 val idx = (f % loopFrames) * 2
                 l += (loop[idx] * g * 32767f).toInt()
                 r += (loop[idx + 1] * g * 32767f).toInt()
@@ -879,8 +880,12 @@ object VideoExporter {
                 var rv = 0.0
                 for (k in tones.indices) {
                     val w = 2.0 * Math.PI * tones[k]
-                    lv += Math.sin(w * t) * 0.55 + Math.sin(w * 2.0 * t) * 0.18 + Math.sin(w * 3.0 * t) * 0.06
-                    rv += Math.sin(w * 1.003 * t) * 0.55 + Math.sin(w * 2.006 * t) * 0.18 + Math.sin(w * 3.009 * t) * 0.06
+                    // Obertöne bewusst stark mitmischt: Reine Sinus-Grundtöne
+                    // liegen so tief, dass sie auf Smartphone-Lautsprechern
+                    // praktisch nicht hörbar sind – die Oktav-/Quint-Anteile
+                    // tragen die Musik auch auf kleinen Lautsprechern.
+                    lv += Math.sin(w * t) * 0.50 + Math.sin(w * 2.0 * t) * 0.30 + Math.sin(w * 3.0 * t) * 0.14 + Math.sin(w * 4.0 * t) * 0.05
+                    rv += Math.sin(w * 1.003 * t) * 0.50 + Math.sin(w * 2.006 * t) * 0.30 + Math.sin(w * 3.009 * t) * 0.14 + Math.sin(w * 4.012 * t) * 0.05
                 }
                 val a = env * amp / tones.size
                 out[i * 2] += (lv * a).toFloat()
@@ -889,8 +894,8 @@ object VideoExporter {
         }
         var peak = 0f
         for (v in out) if (abs(v) > peak) peak = abs(v)
-        if (peak > 0.5f) {
-            val norm = 0.5f / peak
+        if (peak > 0.55f) {
+            val norm = 0.55f / peak
             for (i in out.indices) out[i] *= norm
         }
         return out
@@ -994,6 +999,7 @@ object VideoExporter {
                             if (buf != null) {
                                 buf.clear()
                                 val n = minOf(buf.remaining(), pcm.size - offset)
+
                                 buf.put(pcm, offset, n)
                                 codec.queueInputBuffer(idx, 0, n, offset * 1000000L / (sampleRate * 2 * channels), 0)
                                 offset += n
@@ -1494,6 +1500,7 @@ object VideoExporter {
         val colors = palettes[index % palettes.size]
         val bg = Paint()
         bg.shader = LinearGradient(0f, 0f, 0f, HEIGHT.toFloat(), colors[0], colors[1], Shader.TileMode.CLAMP)
+
         canvas.drawRect(0f, 0f, WIDTH.toFloat(), HEIGHT.toFloat(), bg)
         // Dezente Vignette: dunkelt die Ränder ab und gibt dem Bild Tiefe
         val vignette = Paint()
@@ -1813,11 +1820,10 @@ object VideoExporter {
         speechLang: String = "de"
     ): String {
         var h = 17
-        // Cache-Format-Version 3: Intro-Ausgangsbild und Foto-Übergangs-Clips
-        // ändern das Timing komplett, und Pre-Audio-Dateien fließen jetzt mit
-        // Größe + Änderungsdatum in den Schlüssel ein – alte (ggf. stumme)
-        // Tonspuren werden dadurch sicher verworfen.
-        h = h * 31 + 3
+        // Cache-Format-Version 4: Die Hintergrundmusik ist deutlich lauter
+        // und obertonreicher gemischt – alte, kaum hörbare Tonspuren aus dem
+        // Cache werden dadurch sicher verworfen und neu gemischt.
+        h = h * 31 + 4
         for (s in slides) {
             h = h * 31 + s.title.hashCode()
             h = h * 31 + s.text.hashCode()
@@ -1995,6 +2001,7 @@ object VideoExporter {
         if (frames < TARGET_RATE) return pcm // unter 1 s: nichts sinnvoll messbar
         return runCatching {
             val shelfL = highShelf(1681.9741891, 3.99984385397, 0.7071752369554196, TARGET_RATE)
+
             val hpfL = highPass(38.1354708760244, 0.5003270373238773, TARGET_RATE)
             val shelfR = highShelf(1681.9741891, 3.99984385397, 0.7071752369554196, TARGET_RATE)
             val hpfR = highPass(38.1354708760244, 0.5003270373238773, TARGET_RATE)

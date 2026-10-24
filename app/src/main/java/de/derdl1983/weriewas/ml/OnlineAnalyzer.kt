@@ -207,8 +207,19 @@ object OnlineAnalyzer {
             )
         }
         when (profile.level) {
-            "fortgeschritten" -> sb.append("Vorwissen: fortgeschritten. Du darfst Fachbegriffe verwenden und erklärst sie kurz.\n")
-            "experte" -> sb.append("Vorwissen: Experte. Du darfst technische Details und Fachsprache verwenden.\n")
+            "fortgeschritten" -> sb.append(
+                "Vorwissen: fortgeschritten. Du darfst Fachbegriffe verwenden und erklärst sie kurz. " +
+                    "Geh in die Tiefe: nenne konkrete Zahlen, Materialien, Maße und Wirkprinzipien, " +
+                    "und erkläre auch Zusammenhänge, die erst auf den zweiten Blick offensichtlich sind.\n"
+            )
+            "experte" -> sb.append(
+                "Vorwissen: Experte. Du darfst technische Details und Fachsprache verwenden. " +
+                    "Liefere echtes Fachwissen auf Expertenniveau: exakte Zahlen und Maße, Materialien und " +
+                    "Werkstoffe, physikalische/chemische/technische Grundlagen, Funktionsprinzipien bis ins " +
+                    "Detail, typische Kennwerte, Normen, Historie und industrielle Zusammenhänge – wie ein " +
+                    "gutes Fachbuch, das trotzdem flüssig vorlesbar bleibt. Keine Oberflächlichkeiten, " +
+                    "keine Floskeln, keine ausweichenden Allgemeinplätze.\n"
+            )
             else -> sb.append("Vorwissen: Laie. Erkläre alles Schritt für Schritt ohne Vorwissen.\n")
         }
         when (profile.tone) {
@@ -261,26 +272,22 @@ object OnlineAnalyzer {
             "xai" -> "https://api.x.ai/v1"
             else -> "https://api.mistral.ai/v1"
         }
-        // Ziellänge des Erklärvideos aus dem Video-Screen: Die KI schreibt neue
-        // Analysen von sich aus passend lang (ca. 2,5 Wörter pro Sekunde Sprechzeit).
-        val lengthHint = when (prefs(context).getString("video_length", "auto") ?: "auto") {
-            "30" -> "Längen-Ziel: kompakt. Schreibe insgesamt höchstens etwa 70 Wörter über alle Textfelder; halte jedes Textfeld bei maximal 1-2 kurzen Sätzen und nenne höchstens zwei Fakten.\n"
-            "90" -> "Längen-Ziel: ausführlich. Schreibe insgesamt etwa 200-230 Wörter über alle Textfelder; gib in summary, howItWorks, usage und practical echte Details und greifbare Beispiele und nenne drei Fakten.\n"
-            else -> ""
-        }
+        // Kein Längen-Zwang mehr: Die Analyse ist so ausführlich, wie es
+        // Rolle, Zielgruppe und Vorwissen des KI-Profils verlangen – das
+        // Video passt seine Länge danach der Sprechzeit an.
         return ProviderConfig(
             provider,
             model,
             baseUrl.trimEnd('/'),
             key,
-            profilePrompt(loadProfile(context)) + lengthHint,
+            profilePrompt(loadProfile(context)),
             prefs(context).getString("ai_language", "de") ?: "de"
         )
     }
 
     fun isConfigured(context: Context): Boolean = loadConfig(context) != null
 
-    private val PROMPT = "Du bist ein hilfreicher Erklärassistent für die App „Wer Wie Was“.\nAnalysiere das Foto (bei mehreren Fotos: verschiedene Ansichten desselben Objekts – nutze alle Bilder gemeinsam für eine möglichst genaue Erkennung) und beantworte: Was ist das, wie funktioniert es, wofür wird es verwendet?\nAntworte AUSSCHLIESSLICH mit einem JSON-Objekt (ohne Markdown, ohne Erklärtext) mit genau diesen Feldern:\n{\"title\": \"Kurzer Name des Objekts\", \"category\": \"Kategorie (z. B. Haushalt, Werkzeug, Elektronik, Natur, Lebensmittel, Sport, Kleidung, Verkehr, Medizin)\", \"summary\": \"2-3 Sätze: Was ist das Objekt?\", \"howItWorks\": \"2-4 Sätze: Wie funktioniert es?\", \"usage\": \"1-3 Sätze: Wofür wird es typischerweise verwendet?\", \"practical\": \"1-2 praktische Tipps für den Alltag\", \"facts\": [\"2-3 kurze interessante Fakten\"], \"safety\": \"Sicherheitshinweise (bei Lebensmitteln, Pilzen, Medikamenten, Chemikalien, Tieren, Werkzeugen: deutliche Warnung)\", \"uncertain\": true falls du dir nicht sicher bist, sonst false}\nWichtig: Alle Texte werden in der App zusätzlich laut vorgelesen (Sprachausgabe im Erklärvideo). Schreibe deshalb fließende, gesprochene Sätze: keine Aufzählungszeichen, keine Emojis, keine Abkürzungen („zum Beispiel“ statt „z.B.“, „etwa“ statt „ca.“), keine Klammern mit Beifügungen und keine Fachkürzel. Zahlen schreibe so, dass sie sich beim Vorlesen natürlich anhören."
+    private val PROMPT = "Du bist ein hilfreicher Erklärassistent für die App „Wer Wie Was“.\nAnalysiere das Foto (bei mehreren Fotos: verschiedene Ansichten desselben Objekts – nutze alle Bilder gemeinsam für eine möglichst genaue Erkennung) und beantworte: Was ist das, wie funktioniert es, wofür wird es verwendet?\nAntworte AUSSCHLIESSLICH mit einem JSON-Objekt (ohne Markdown, ohne Erklärtext) mit genau diesen Feldern:\n{\"title\": \"Kurzer Name des Objekts\", \"category\": \"Kategorie (z. B. Haushalt, Werkzeug, Elektronik, Natur, Lebensmittel, Sport, Kleidung, Verkehr, Medizin)\", \"summary\": \"3-5 Sätze: Was ist das Objekt und was macht es besonders?\", \"howItWorks\": \"4-8 Sätze: Wie funktioniert es? Erkläre das Funktionsprinzip Schritt für Schritt und mit echtem Fachwissen – nenne konkrete Zahlen, Materialien, physikalische oder technische Grundlagen, wo sie helfen.\", \"usage\": \"2-5 Sätze: Wofür wird es typischerweise verwendet – auch weniger offensichtliche Einsatzbereiche\", \"practical\": \"2-4 praktische Tipps für den Alltag, jeder als vollständiger Satz\", \"facts\": [\"3-5 interessante, konkrete Fakten (Zahlen, Geschichte, Herstellung, Besonderheiten)\"], \"safety\": \"Sicherheitshinweise (bei Lebensmitteln, Pilzen, Medikamenten, Chemikalien, Tieren, Werkzeugen: deutliche Warnung)\", \"uncertain\": true falls du dir nicht sicher bist, sonst false}\nDie genannten Umfänge sind Richtwerte nach unten: Lieber gründlicher und lehrreicher als dünn – die Qualität der Erklärung ist das Wichtigste. Folge dabei der Rollen-, Zielgruppen- und Vorwissen-Vorgabe aus dem Profil.\nWichtig: Alle Texte werden in der App zusätzlich laut vorgelesen (Sprachausgabe im Erklärvideo). Schreibe deshalb fließende, gesprochene Sätze: keine Aufzählungszeichen, keine Emojis, keine Abkürzungen („zum Beispiel“ statt „z.B.“, „etwa“ statt „ca.“), keine Klammern mit Beifügungen und keine Fachkürzel. Zahlen schreibe so, dass sie sich beim Vorlesen natürlich anhören."
 
     private fun promptFor(config: ProviderConfig): String {
         val lang = if (config.language == "de") {
@@ -383,10 +390,10 @@ object OnlineAnalyzer {
             .put("model", config.model)
             .put("messages", messages)
         if (config.provider == "openai") {
-            body.put("max_completion_tokens", 800)
+            body.put("max_completion_tokens", 1600)
         } else {
             body.put("temperature", 0.3)
-            body.put("max_tokens", 800)
+            body.put("max_tokens", 1600)
         }
         val conn = openPost(config.baseUrl + "/chat/completions", config.apiKey)
         val text = sendAndRead(conn, body.toString())
@@ -431,7 +438,7 @@ object OnlineAnalyzer {
             )
             .put(
                 "generationConfig",
-                JSONObject().put("temperature", 0.3).put("maxOutputTokens", 800)
+                JSONObject().put("temperature", 0.3).put("maxOutputTokens", 1600)
             )
         val url = config.baseUrl + "/models/" + config.model + ":generateContent?key=" + config.apiKey
         val conn = openPost(url, "")
@@ -467,7 +474,7 @@ object OnlineAnalyzer {
         messages.put(JSONObject().put("role", "user").put("content", question))
         val body = JSONObject()
             .put("model", config.model)
-            .put("max_tokens", 800)
+            .put("max_tokens", 1600)
             .put("temperature", 0.3)
             .put("system", system)
             .put("messages", messages)
@@ -491,6 +498,7 @@ object OnlineAnalyzer {
             if (block.optString("type") == "text") sb.append(block.optString("text"))
         }
         return sb.toString()
+
     }
 
     /** Mistral und alle OpenAI-kompatiblen APIs (chat/completions, Bilder als Data-URLs). */
@@ -514,10 +522,10 @@ object OnlineAnalyzer {
         if (config.provider == "openai") {
             // Aktuelle GPT-Modelle: max_completion_tokens statt max_tokens,
             // niedrige Temperature wird nicht mehr unterstützt.
-            body.put("max_completion_tokens", 2000)
+            body.put("max_completion_tokens", 4000)
         } else {
             body.put("temperature", 0.2)
-            body.put("max_tokens", 2000)
+            body.put("max_tokens", 4000)
         }
         val conn = openPost(config.baseUrl + "/chat/completions", config.apiKey)
         val text = sendAndRead(conn, body.toString())
@@ -585,7 +593,7 @@ object OnlineAnalyzer {
         val message = JSONObject().put("role", "user").put("content", contentParts)
         val body = JSONObject()
             .put("model", config.model)
-            .put("max_tokens", 2000)
+            .put("max_tokens", 4000)
             .put("temperature", 0.2)
             .put("messages", JSONArray().put(message))
         val conn = openPost(

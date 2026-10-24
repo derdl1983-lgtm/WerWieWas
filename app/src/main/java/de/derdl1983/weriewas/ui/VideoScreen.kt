@@ -119,27 +119,10 @@ private fun ratePercent(speed: Float): Int =
 
 /**
  * Baut die Seiten des Erklärvideos aus einer Entdeckung. Die Szenenauswahl
- * passt sich der gewählten Ziellänge an: "30" kompakt (wenige Szenen),
- * "60"/"auto" der Standard-Umfang, "90" mit eigenen Fakten-Szenen für
- * ausführliche Erklärungen. Die tatsächliche Dauer folgt der Sprechzeit.
+ * folgt allein dem Umfang der KI-Analyse – das Video ist genau so lang wie
+ * die Erklärung es hergibt. Die tatsächliche Dauer folgt der Sprechzeit.
  */
-/**
- * Fakten-Szene mit echter Mini-Überschrift: Ist der erste Satz des Fakts
- * kurz und folgt weiterer Text, dient er als Titel und nur der Rest als
- * Szenentext – so wird nichts doppelt vorgelesen und die Karte bekommt
- * trotzdem eine aussagekräftige Überschrift statt eines blassen „Fakt 2“.
- * Fakten aus einem einzigen Satz behalten die klassische Nummerierung.
- */
-private fun factScene(fact: String, index: Int): Slide {
-    val clean = fact.trim()
-    val m = Regex("^(.{10,42}?[.!?])\\s+(.{20,})$").find(clean)
-    val headline = m?.groupValues?.get(1)?.trim()
-    val rest = m?.groupValues?.get(2)?.trim()
-    return if (!headline.isNullOrBlank() && !rest.isNullOrBlank()) Slide(headline, rest, "🌟")
-    else Slide("Fakt " + (index + 1), clean, "🌟")
-}
-
-private fun buildSlides(d: Discovery, length: String): List<Slide> {
+private fun buildSlides(d: Discovery): List<Slide> {
     val e = d.explanation
     val continueSlide = Slide(
         "Weiter lernen",
@@ -147,24 +130,6 @@ private fun buildSlides(d: Discovery, length: String): List<Slide> {
             "Viel Spaß beim Entdecken!",
         "🎓"
     )
-    if (length == "30") {
-        // Kompakt: das Wichtigste in wenigen Szenen (~30 Sekunden Sprechzeit)
-        val slides = mutableListOf(
-            Slide("Das Objekt", e.title, "📸", showPhoto = true),
-            Slide("Was ist das?", e.summary, "❓"),
-            Slide(
-                "Gut zu wissen",
-                listOfNotNull(
-                    e.practical.ifBlank { null },
-                    e.facts.firstOrNull()?.let { "• " + it }
-                ).joinToString("\n\n"),
-                "💡"
-            )
-        )
-        if (e.safety.isNotBlank()) slides.add(Slide("Sicherheit", e.safety, "⚠️"))
-        slides.add(continueSlide)
-        return slides
-    }
     val slides = mutableListOf(
         Slide("Das Objekt", e.title, "📸", showPhoto = true),
         Slide("Was ist das?", e.summary, "❓"),
@@ -172,12 +137,7 @@ private fun buildSlides(d: Discovery, length: String): List<Slide> {
         Slide("Wofür wird es verwendet?", e.usage, "🎯"),
         Slide("Praktische Tipps", e.practical, "💡")
     )
-    if (length == "90" && e.facts.isNotEmpty()) {
-        // Ausführlich: jeder Faktenpunkt bekommt eine eigene Szene (~90 Sekunden)
-        e.facts.forEachIndexed { i, f -> slides.add(factScene(f, i)) }
-    } else {
-        slides.add(Slide("Interessante Fakten", e.facts.joinToString("\n") { "• " + it }, "🌟"))
-    }
+    slides.add(Slide("Interessante Fakten", e.facts.joinToString("\n") { "• " + it }, "🌟"))
     slides.add(
         Slide(
             "Sicherheit",
@@ -236,12 +196,8 @@ fun VideoScreen(
 
     val prefs = remember { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
 
-    // Ziel-Länge des Videos: steuert die Szenenauswahl (und die Textlänge
-    // neuer Foto-Analysen über das KI-Profil).
-    var videoLength by rememberSaveable {
-        mutableStateOf(prefs.getString("video_length", "auto") ?: "auto")
-    }
-    val slides = remember(discovery.id, videoLength) { buildSlides(discovery, videoLength) }
+    // Das Video folgt allein dem Umfang der KI-Analyse – keine Ziellänge mehr.
+    val slides = remember(discovery.id) { buildSlides(discovery) }
     // Foto im Hintergrund dekodieren, damit der Screen sofort aufbaut
     var bitmap by remember(discovery.id) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(discovery.id) {
@@ -249,7 +205,7 @@ fun VideoScreen(
     }
 
     // Passende, frei lizenzierte Online-Themenbilder je Szene (falls online verfügbar)
-    val webImages = remember(discovery.id, videoLength) { mutableStateOf<List<WebImages.WebImage?>?>(null) }
+    val webImages = remember(discovery.id) { mutableStateOf<List<WebImages.WebImage?>?>(null) }
     LaunchedEffect(discovery.id, slides) {
         webImages.value = null
         val queries = WebImages.queriesForSlides(
@@ -262,7 +218,7 @@ fun VideoScreen(
 
     // Dekodierte Themenbilder je Seite – im Hintergrund geladen, damit die
     // Vorschau beim Umblättern nicht ruckelt (kein Dekodieren beim Zeichnen).
-    var webThumbs by remember(discovery.id, videoLength) { mutableStateOf<Map<Int, Bitmap>>(emptyMap()) }
+    var webThumbs by remember(discovery.id) { mutableStateOf<Map<Int, Bitmap>>(emptyMap()) }
 
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val speedLabels = remember {
@@ -343,14 +299,6 @@ fun VideoScreen(
     var audioResult by remember { mutableStateOf<VideoExporter.AudioExportResult?>(null) }
     var audioPlaying by remember { mutableStateOf(false) }
     var audioPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    // Geschätzte Länge der aktuellen Szenenauswahl: Wortzahl → Sprechzeit
-    // (ca. 2,6 Wörter pro Sekunde) plus Szenen-Pausen, Intro und Outro.
-    val estSeconds = remember(slides, speed) {
-        val words = slides.sumOf { s ->
-            (s.title + " " + s.text).split(Regex("\\s+")).count { it.isNotBlank() }
-        }
-        (words / (2.6f * speed)).toInt() + slides.size * 2 + 5
-    }
 
     fun speakCurrent(engine: TextToSpeech) {
         val slide = slides[page]
@@ -550,6 +498,7 @@ fun VideoScreen(
                 }
             )
         }
+
     ) { padding ->
         Column(
             modifier = Modifier
@@ -860,53 +809,6 @@ fun VideoScreen(
             Spacer(Modifier.height(20.dp))
 
             Text(
-                "Ziel-Länge des Videos",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                listOf(
-                    "auto" to "Automatik",
-                    "30" to "~30 s",
-                    "60" to "~60 s",
-                    "90" to "~90 s"
-                ).forEach { (key, label) ->
-                    OutlinedButton(
-                        onClick = {
-                            videoLength = key
-                            prefs.edit().putString("video_length", key).apply()
-                            page = page.coerceIn(0, slides.size - 1)
-                        },
-                        colors = if (videoLength == key) {
-                            ButtonDefaults.outlinedButtonColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                        } else {
-                            ButtonDefaults.outlinedButtonColors()
-                        }
-                    ) {
-                        Text(label)
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "Weniger Szenen für kurze Videos, eigene Fakten-Szenen für lange. " +
-                    "Aktuell geschätzte Länge der Auswahl: ca. " + estSeconds + " Sekunden" +
-                    (if (videoLength == "30" || videoLength == "90")
-                        " – neue Foto-Analysen schreibt die KI dann von sich aus passend dazu."
-                    else "") + ".",
-                style = MaterialTheme.typography.bodySmall,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-            )
-            Spacer(Modifier.height(20.dp))
-
-            Text(
                 "Videoformat",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary
@@ -1097,6 +999,7 @@ fun VideoScreen(
             // zum Anhören und Teilen ganz ohne Video-Export.
             Spacer(Modifier.height(12.dp))
             OutlinedButton(
+
                 onClick = {
                     playing = false
                     audioBusy = true
