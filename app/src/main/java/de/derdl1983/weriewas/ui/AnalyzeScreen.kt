@@ -55,7 +55,9 @@ import de.derdl1983.weriewas.ml.OnlineAnalyzer
 import de.derdl1983.weriewas.util.Images
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -86,6 +88,8 @@ fun AnalyzeScreen(
     var configured by remember { mutableStateOf(OnlineAnalyzer.isConfigured(context)) }
     var showConsent by remember { mutableStateOf(false) }
     var running by remember { mutableStateOf(false) }
+    var analysisJob by remember { mutableStateOf<Job?>(null) }
+    var elapsed by remember { mutableStateOf(0) }
     var error by remember { mutableStateOf<String?>(null) }
     val autoAnalyze = remember {
         context.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -146,10 +150,22 @@ fun AnalyzeScreen(
         onDone(discovery.id)
     }
 
+    // Sekunden mitzählen, während die Analyse läuft: Der Nutzer sieht, dass die
+    // App arbeitet – kein Eindruck eines eingefrorenen Ladekreises mehr.
+    LaunchedEffect(running) {
+        if (running) {
+            while (true) {
+                delay(1000)
+                elapsed++
+            }
+        }
+    }
+
     fun startOnlineAnalysis() {
         running = true
         error = null
-        scope.launch {
+        elapsed = 0
+        analysisJob = scope.launch {
             try {
                 val config = OnlineAnalyzer.loadConfig(context)
                 if (config == null) {
@@ -318,17 +334,29 @@ fun AnalyzeScreen(
                 CircularProgressIndicator(strokeWidth = 5.dp)
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    text = "Analysiere dein Foto …",
+                    text = "Analysiere dein Foto … ($elapsed s)",
                     style = MaterialTheme.typography.titleMedium,
                     textAlign = TextAlign.Center
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Wird online von $providerLabel analysiert.",
+                    text = "Wird online von $providerLabel analysiert. " +
+                        "Das kann je nach Anbieter und Verbindung ein bis zwei Minuten dauern.",
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
+                Spacer(Modifier.height(16.dp))
+                OutlinedButton(
+                    onClick = {
+                        // Sofort zurück in den Startzustand: Die laufende Anfrage
+                        // endet im Hintergrund spätestens mit ihrem hart begrenzten
+                        // Timeout; ein danach ankommendes Ergebnis wird verworfen.
+                        running = false
+                        analysisJob?.cancel()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Analyse abbrechen") }
             } else {
                 // ---------- Bereit zur Analyse ----------
                 if (message != null) {

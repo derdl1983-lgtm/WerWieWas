@@ -7,11 +7,17 @@ import de.derdl1983.weriewas.data.Explanation
 import de.derdl1983.weriewas.data.KnowledgeBase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
 
 /**
  * Online-Bildanalyse über einen wählbaren KI-Anbieter
@@ -395,8 +401,10 @@ object OnlineAnalyzer {
             body.put("temperature", 0.3)
             body.put("max_tokens", 1600)
         }
-        val conn = openPost(config.baseUrl + "/chat/completions", config.apiKey)
-        val text = sendAndRead(conn, body.toString())
+        val text = postJson(
+            config.baseUrl + "/chat/completions", body.toString(),
+            mapOf("Authorization" to "Bearer " + config.apiKey)
+        )
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
@@ -441,8 +449,7 @@ object OnlineAnalyzer {
                 JSONObject().put("temperature", 0.3).put("maxOutputTokens", 1600)
             )
         val url = config.baseUrl + "/models/" + config.model + ":generateContent?key=" + config.apiKey
-        val conn = openPost(url, "")
-        val text = sendAndRead(conn, body.toString())
+        val text = postJson(url, body.toString())
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
@@ -478,14 +485,13 @@ object OnlineAnalyzer {
             .put("temperature", 0.3)
             .put("system", system)
             .put("messages", messages)
-        val conn = openPost(
-            config.baseUrl + "/messages", "",
+        val text = postJson(
+            config.baseUrl + "/messages", body.toString(),
             mapOf(
                 "x-api-key" to config.apiKey,
                 "anthropic-version" to "2023-06-01"
             )
         )
-        val text = sendAndRead(conn, body.toString())
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
@@ -527,8 +533,10 @@ object OnlineAnalyzer {
             body.put("temperature", 0.2)
             body.put("max_tokens", 4000)
         }
-        val conn = openPost(config.baseUrl + "/chat/completions", config.apiKey)
-        val text = sendAndRead(conn, body.toString())
+        val text = postJson(
+            config.baseUrl + "/chat/completions", body.toString(),
+            mapOf("Authorization" to "Bearer " + config.apiKey)
+        )
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
@@ -558,8 +566,7 @@ object OnlineAnalyzer {
             .put("contents", contents)
             .put("generationConfig", generationConfig)
         val url = config.baseUrl + "/models/" + config.model + ":generateContent?key=" + config.apiKey
-        val conn = openPost(url, "")
-        val text = sendAndRead(conn, body.toString())
+        val text = postJson(url, body.toString())
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
@@ -596,14 +603,13 @@ object OnlineAnalyzer {
             .put("max_tokens", 4000)
             .put("temperature", 0.2)
             .put("messages", JSONArray().put(message))
-        val conn = openPost(
-            config.baseUrl + "/messages", "",
+        val text = postJson(
+            config.baseUrl + "/messages", body.toString(),
             mapOf(
                 "x-api-key" to config.apiKey,
                 "anthropic-version" to "2023-06-01"
             )
         )
-        val text = sendAndRead(conn, body.toString())
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
@@ -620,42 +626,67 @@ object OnlineAnalyzer {
         return sb.toString()
     }
 
-    private fun openPost(url: String, bearer: String, extraHeaders: Map<String, String> = emptyMap()): HttpURLConnection =
-        (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            doOutput = true
-            connectTimeout = 30000
-            readTimeout = 90000
-            setRequestProperty("Content-Type", "application/json")
-            if (bearer.isNotBlank()) setRequestProperty("Authorization", "Bearer " + bearer)
-            for ((k, v) in extraHeaders) setRequestProperty(k, v)
-        }
+    /** Gemeinsamer HTTP-Client mit harten Timeouts: HttpURLConnection hatte kein
+     *  Write-Timeout – ein steckengebliebener Upload konnte die Analyse endlos
+     *  blockieren („App hängt“). callTimeout begrenzt jetzt den kompletten Aufruf
+     *  inkl. Verbindung, Upload und Antwort: Jede Anfrage endet garantiert mit
+     *  Ergebnis oder klarer Fehlermeldung. */
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .callTimeout(150, TimeUnit.SECONDS)
+        .build()
 
-    private fun sendAndRead(conn: HttpURLConnection, body: String): String {
+    /**
+     * Führt einen JSON-POST aus und liefert den Antwort-Text. HTTP-Fehler,
+     * Timeouts und Netz-Ausfälle werden als verständliche Meldung gemeldet –
+     * die Analyse bleibt nie länger als das Timeout hängen.
+     */
+    private fun postJson(url: String, body: String, headers: Map<String, String> = emptyMap()): String {
+        val request = Request.Builder()
+            .url(url)
+            .post(body.toRequestBody("application/json".toMediaType()))
+            .apply { for ((k, v) in headers) header(k, v) }
+            .build()
         try {
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val code = conn.responseCode
-            val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                ?.bufferedReader()?.use { it.readText() } ?: ""
-            if (code !in 200..299) {
-                // Fehlerursache aus der API-Antwort heraussuchen und verständlich melden
-                val reason = extractApiError(text)
-                val hint = when {
-                    code == 401 || code == 403 ->
-                        "Zugriff verweigert (HTTP " + code + "). Prüfe deinen API-Schlüssel."
-                    code == 404 ->
-                        "Adresse oder Modell nicht gefunden (HTTP 404). Prüfe Modellname und Basis-URL."
-                    code == 429 ->
-                        "Anfragelimit erreicht (HTTP 429). Warte kurz und versuche es erneut."
-                    code >= 500 ->
-                        "Der KI-Dienst hat ein Problem (HTTP " + code + "). Versuche es später erneut."
-                    else -> "HTTP-Fehler " + code
+            httpClient.newCall(request).execute().use { response ->
+                val text = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    // Fehlerursache aus der API-Antwort heraussuchen und verständlich melden
+                    val reason = extractApiError(text)
+                    val hint = when {
+                        code == 401 || code == 403 ->
+                            "Zugriff verweigert (HTTP " + code + "). Prüfe deinen API-Schlüssel."
+                        code == 404 ->
+                            "Adresse oder Modell nicht gefunden (HTTP 404). Prüfe Modellname und Basis-URL."
+                        code == 429 ->
+                            "Anfragelimit erreicht (HTTP 429). Warte kurz und versuche es erneut."
+                        code >= 500 ->
+                            "Der KI-Dienst hat ein Problem (HTTP " + code + "). Versuche es später erneut."
+                        else -> "HTTP-Fehler " + code
+                    }
+                    throw IllegalStateException(hint + (if (reason.isNotBlank()) " – " + reason else ""))
                 }
-                throw IllegalStateException(hint + (if (reason.isNotBlank()) " – " + reason else ""))
+                return text
             }
-            return text
-        } finally {
-            conn.disconnect()
+        } catch (e: InterruptedIOException) {
+            // SocketTimeoutException & Co.: Verbindung oder Antwort dauerte zu lange
+            throw IllegalStateException(
+                "Zeitüberschreitung: Der KI-Dienst hat zu lange nicht geantwortet. " +
+                    "Prüfe deine Internetverbindung und versuche es erneut."
+            )
+        } catch (e: UnknownHostException) {
+            throw IllegalStateException(
+                "Keine Internetverbindung (Server nicht erreichbar). " +
+                    "Prüfe WLAN/Mobilfunk und versuche es erneut."
+            )
+        } catch (e: IOException) {
+            throw IllegalStateException(
+                "Verbindung zum KI-Dienst fehlgeschlagen: " +
+                    (e.message ?: e.javaClass.simpleName)
+            )
         }
     }
 
