@@ -401,8 +401,9 @@ object OnlineAnalyzer {
             body.put("temperature", 0.3)
             body.put("max_tokens", 1600)
         }
-        val text = postJson(
-            config.baseUrl + "/chat/completions", body.toString(),
+        val text = postJsonAutoTokens(
+            config.baseUrl + "/chat/completions", body,
+            listOf("max_completion_tokens", "max_tokens"),
             mapOf("Authorization" to "Bearer " + config.apiKey)
         )
         val o = JSONObject(text)
@@ -449,7 +450,7 @@ object OnlineAnalyzer {
                 JSONObject().put("temperature", 0.3).put("maxOutputTokens", 1600)
             )
         val url = config.baseUrl + "/models/" + config.model + ":generateContent?key=" + config.apiKey
-        val text = postJson(url, body.toString())
+        val text = postJsonAutoTokens(url, body, listOf("maxOutputTokens"))
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
@@ -485,8 +486,9 @@ object OnlineAnalyzer {
             .put("temperature", 0.3)
             .put("system", system)
             .put("messages", messages)
-        val text = postJson(
-            config.baseUrl + "/messages", body.toString(),
+        val text = postJsonAutoTokens(
+            config.baseUrl + "/messages", body,
+            listOf("max_tokens"),
             mapOf(
                 "x-api-key" to config.apiKey,
                 "anthropic-version" to "2023-06-01"
@@ -533,8 +535,9 @@ object OnlineAnalyzer {
             body.put("temperature", 0.2)
             body.put("max_tokens", 4000)
         }
-        val text = postJson(
-            config.baseUrl + "/chat/completions", body.toString(),
+        val text = postJsonAutoTokens(
+            config.baseUrl + "/chat/completions", body,
+            listOf("max_completion_tokens", "max_tokens"),
             mapOf("Authorization" to "Bearer " + config.apiKey)
         )
         val o = JSONObject(text)
@@ -566,7 +569,7 @@ object OnlineAnalyzer {
             .put("contents", contents)
             .put("generationConfig", generationConfig)
         val url = config.baseUrl + "/models/" + config.model + ":generateContent?key=" + config.apiKey
-        val text = postJson(url, body.toString())
+        val text = postJsonAutoTokens(url, body, listOf("maxOutputTokens"))
         val o = JSONObject(text)
         if (o.has("error")) {
             val err = o.optJSONObject("error")
@@ -603,8 +606,9 @@ object OnlineAnalyzer {
             .put("max_tokens", 4000)
             .put("temperature", 0.2)
             .put("messages", JSONArray().put(message))
-        val text = postJson(
-            config.baseUrl + "/messages", body.toString(),
+        val text = postJsonAutoTokens(
+            config.baseUrl + "/messages", body,
+            listOf("max_tokens"),
             mapOf(
                 "x-api-key" to config.apiKey,
                 "anthropic-version" to "2023-06-01"
@@ -654,6 +658,15 @@ object OnlineAnalyzer {
                 val text = response.body?.string() ?: ""
                 if (!response.isSuccessful) {
                     val code = response.code
+                    if (code == 402) {
+                        // OpenRouter-402: Guthaben deckt das angefragte max_tokens nicht
+                        // („… can only afford N“) – gesondert markieren, damit
+                        // postJsonAutoTokens das Limit senken und wiederholen kann.
+                        throw PaymentRequiredException(
+                            Regex("can only afford (\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull(),
+                            "Guthaben des KI-Dienstes reicht für die angefragte Antwortlänge nicht aus (HTTP 402)."
+                        )
+                    }
                     // Fehlerursache aus der API-Antwort heraussuchen und verständlich melden
                     val reason = extractApiError(text)
                     val hint = when {
@@ -686,6 +699,47 @@ object OnlineAnalyzer {
             throw IllegalStateException(
                 "Verbindung zum KI-Dienst fehlgeschlagen: " +
                     (e.message ?: e.javaClass.simpleName)
+            )
+        }
+    }
+
+    /** HTTP 402 vom KI-Dienst: Das Guthaben deckt das angefragte max_tokens nicht;
+     *  affordableTokens = leistbares Token-Limit aus der Fehlermeldung (falls parsbar). */
+    private class PaymentRequiredException(val affordableTokens: Int?, message: String) :
+        IllegalStateException(message)
+
+    /**
+     * OpenRouter und ähnliche Dienste prüfen VOR dem Aufruf, ob das angefragte
+     * max_tokens vom Guthaben gedeckt ist, und lehnen sonst mit HTTP 402 ab
+     * („You requested up to 4000 tokens, but can only afford 1754“). Diese
+     * Funktion wiederholt die Anfrage dann automatisch mit gesenktem
+     * Token-Limit: Die Analyse liefert eine kürzere Antwort, statt ganz zu
+     * scheitern. Ist auch das kleinste leistbare Limit (400) erreicht, gibt es
+     * eine klare Guthaben-Meldung.
+     */
+    private fun postJsonAutoTokens(
+        url: String,
+        body: JSONObject,
+        tokenFields: List<String>,
+        headers: Map<String, String> = emptyMap()
+    ): String {
+        try {
+            return postJson(url, body.toString(), headers)
+        } catch (e: PaymentRequiredException) {
+            var budget = e.affordableTokens?.let { (it * 0.9).toInt() } ?: 1000
+            while (budget >= 400) {
+                for (f in tokenFields) body.put(f, budget)
+                try {
+                    return postJson(url, body.toString(), headers)
+                } catch (e2: PaymentRequiredException) {
+                    var next = e2.affordableTokens?.let { (it * 0.9).toInt() } ?: (budget / 2)
+                    if (next >= budget) next = budget / 2
+                    budget = next
+                }
+            }
+            throw IllegalStateException(
+                "Guthaben des KI-Dienstes ist aufgebraucht (HTTP 402). " +
+                    "Fülle Guthaben auf, wechsle Modell/Anbieter oder nutze eine Gratis-Alternative."
             )
         }
     }
